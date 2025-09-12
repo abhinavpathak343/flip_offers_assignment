@@ -1,0 +1,161 @@
+{
+  "card_name": "HDFC Diners Club Privilege",
+  "issuer": "HDFC Bank",
+  "card_category": "Premium Credit Card",
+  "card_type": "Diners Club",
+  "fees_and_charges": {
+    "joining_fee": "Rs. 1000/- + Applicable Taxes",
+    "annual_fee": "Rs. 1000/- + Applicable Taxes",
+    "renewal_fee": "Renewal Fee waiver for next year on spends of Rs. 3 Lakhs in card anniversary year",
+    "foreign_markup": "3.5%",
+    "late_payment_fee": "amount if mentioned",
+    "overlimit_fee": "amount if mentioned"
+  },
+  "eligibility_criteria": {
+    "salaried": {
+      "age_range": "21-60 years",
+      "minimum_income": "Net Monthly Income > Rs 35,000",
+      "other_requirements": []
+    },
+    "self_employed": {
+      "age_range": "21-65 years",
+      "minimum_income": "ITR > Rs 6 Lakhs per annum",
+      "other_requirements": []
+    }
+  },
+  "credit_details": {
+    "credit_limit": "Not specified",
+    "interest_free_period": "Up to 50 days",
+    "revolving_credit": "Available at a nominal interest rate"
+  },
+  "rewards_program": {
+    "earning_structure": [
+      "4 Reward Points for every Rs. 150 spent",
+      "5X Reward Points on Swiggy and Zomato",
+      "Upto 10X Rewards on Booking flight tickets / stays across 150+ hotels"
+    ],
+    "redemption_options": [
+      "Flight bookings",
+      "Hotel bookings",
+      "Dining redemptions",
+      "Cashback options",
+      "Gift vouchers"
+    ],
+    "redemption_rates": {
+      "smartbuy": "1 RP = Rs 0.5",
+      "dining_catalogue": "1 RP = Rs 0.50",
+      "cashback": "1 RP = Rs 0.20",
+      "exclusive_catalogue": "1 RP upto Rs 0.35"
+    }
+  },
+  "welcome_benefits": [
+    {
+      "benefit_name": "Complimentary Annual Memberships of Swiggy One and Times Prime",
+      "description": "Avail on spending Rs 75,000 within the first 90 days of card issuance",
+      "conditions": "Spending requirement",
+      "validity": "First 90 days of card issuance"
+    }
+  ],
+  "milestone_benefits": [
+    {
+      "milestone_name": "₹ 1,500 worth vouchers on quarterly spends of Rs. 1.5 lakh",
+      "description": "Avail on spends of Rs. 1.5 lakhs in a calendar quarter",
+      "spending_requirement": "Rs. 1.5 lakhs in a calendar quarter",
+      "reward_value": "₹ 1,500 vouchers",
+      "validity_period": "Quarterly"
+    }
+  ],
+  "travel_benefits": {
+    "lounge_access": {
+      "domestic": "2 Complimentary Airport lounge access every calendar quarter worldwide",
+      "international": "2 Complimentary Airport lounge access every calendar quarter worldwide",
+      "frequency": "Every calendar quarter"
+    },
+    "travel_insurance": {
+      "air_accident_cover": "Rs. 1 crore",
+      "overseas_hospitalization": "Up to Rs. 25 lakhs",
+      "baggage_delay": "Up to Rs. 50,000",
+      "credit_liability": "Up to Rs. 9 lakhs"
+    },
+    "concierge_services": "Details about concierge services not provided"
+  },
+  "dining_entertainment_benefits": [
+    {
+      "benefit_name": "Buy 1 Get 1 Free on movie/non-movie weekend tickets via BookMyShow",
+      "description": "Applicable for shows on Friday, Saturday, and Sunday. Maximum discount of Rs. 250/ticket, upto 2 free tickets every calendar month",
+      "merchant": "BookMyShow",
+      "discount_value": "Maximum discount of Rs. 250/ticket",
+      "conditions": "Applicable on specific days",
+      "validity": "Every calendar month"
+    },
+    {
+      "benefit_name": "5X Reward Points on Swiggy and Zomato",
+      "description": "Additional 4X RP is capped at 2500 reward points every calendar month",
+      "merchant": "Swiggy and Zomato",
+      "discount_value": "5X Reward Points",
+      "conditions": "Capped at 2500 reward points every calendar month",
+      "validity": "Every calendar month"
+    }
+  ],
+  "other_benefits": [
+    "Contactless Payment: Enabled for contactless payments",
+    "Smart EMI: Option to convert big spends into EMI",
+    "Exclusive Offers: Fast Track Airport Experience, Dining Delight, Luxury Spas, SME offers",
+    "Customer Care: HDFC Phone Banking - 1800 1600 / 1800 2600, Smartbuy Concierge - 1860 425 1188"
+  ],
+  "terms_and_conditions": {
+    "general_terms": "Key general terms and conditions not provided",
+    "offer_terms": "Terms specific to offers not provided",
+    "fee_terms": "Terms related to fees and charges not provided",
+    "reward_terms": "Terms related to rewards program not provided"
+  },
+  "summary": "HDFC Diners Club Privilege Credit Card offers a range of benefits including lounge access, milestone rewards, and dining offers.",
+  "offers": [
+    {
+      "issuer": "HDFC Bank",
+      "card_applicability": [
+        "Diners Club Privilege"
+      ],
+      "offer_id": "unique_identifier",
+      "title": "Buy 1 Get 1 Free on BookMyShow",
+      "description": "'Buy 1 Get 1 Free' on movie/non-movie weekend tickets via BookMyShow. Applicable for shows on Friday, Saturday, and Sunday. Maximum discount of Rs. 250/ticket, upto 2 free tickets every calendar month.",
+      "category": "entertainment",
+      "offer_type": "discount",
+      "discount_value": "Maximum discount of Rs. 250/ticket",
+      "minimum_spend": "Not specified",
+      "maximum_benefit": "Not specified",
+      "validity": "Every calendar month",
+      "merchant": "BookMyShow",
+      "applicable_days": "Friday, Saturday, Sunday",
+      "usage_limit": "Not specified",
+      "terms_conditions": [
+        "Offer valid on specific days",
+        "Maximum 2 free tickets per month"
+      ]
+    },
+    {
+      "issuer": "HDFC Bank",
+      "card_applicability": [
+        "Diners Club Privilege"
+      ],
+      "offer_id": "unique_identifier",
+      "title": "5X Reward Points on Swiggy and Zomato",
+      "description": "5X Reward Points on Swiggy and Zomato. Additional 4X RP is capped at 2500 reward points every calendar month.",
+      "category": "dining",
+      "offer_type": "reward_points",
+      "discount_value": "5X Reward Points",
+      "minimum_spend": "Not specified",
+      "maximum_benefit": "Capped at 2500 reward points per month",
+      "validity": "Every calendar month",
+      "merchant": "Swiggy and Zomato",
+      "applicable_days": "Not specified",
+      "usage_limit": "Not specified",
+      "terms_conditions": [
+        "Additional 4X RP capped at 2500 points",
+        "Reward points accrual subject to terms"
+      ]
+    }
+  ],
+  "extraction_timestamp": "2025-09-12T06:02:52.337Z",
+  "total_offers": 2
+}

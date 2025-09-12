@@ -49,10 +49,29 @@ function isRelevantLink(absoluteUrl, anchorText, rootPathHint) {
         "click here", "know more", "terms", "conditions", "tnc",
         "benefits", "features", "offers", "lounge", "product",
         "privilege", "diners", "rewards", "fees", "charges",
-        "pdf", "document", "brochure"
+        "pdf", "document", "brochure", "policy", "details"
     ];
 
+    // Check for PDF files
     if (urlLower.endsWith(".pdf")) return true;
+
+    // Check for PDF links that might not have .pdf extension but contain PDF content
+    if (urlLower.includes("pdf") ||
+        urlLower.includes("document") ||
+        urlLower.includes("brochure") ||
+        urlLower.includes("policy") ||
+        urlLower.includes("terms") ||
+        urlLower.includes("charges")) return true;
+
+    // Check for "click here" links that might lead to PDFs
+    if (textLower.includes("click here") &&
+        (textLower.includes("t&c") ||
+            textLower.includes("terms") ||
+            textLower.includes("conditions") ||
+            textLower.includes("policy") ||
+            textLower.includes("details") ||
+            textLower.includes("charges"))) return true;
+
     if (rootPathHint && urlLower.includes(rootPathHint)) return true;
     return keywords.some((k) => textLower.includes(k) || urlLower.includes(k));
 }
@@ -143,7 +162,24 @@ export async function crawlPage(url) {
                 if (!isRelevantLink(absoluteUrl, anchorText, rootPathHint)) return;
 
                 let type = "page";
-                if (absoluteUrl.toLowerCase().endsWith(".pdf")) type = "pdf";
+                const urlLower = absoluteUrl.toLowerCase();
+                const textLower = anchorText.toLowerCase();
+
+                // Detect PDF links more comprehensively
+                if (urlLower.endsWith(".pdf") ||
+                    urlLower.includes("pdf") ||
+                    urlLower.includes("document") ||
+                    urlLower.includes("brochure") ||
+                    urlLower.includes("policy") ||
+                    (textLower.includes("click here") &&
+                        (textLower.includes("t&c") ||
+                            textLower.includes("terms") ||
+                            textLower.includes("conditions") ||
+                            textLower.includes("policy") ||
+                            textLower.includes("details") ||
+                            textLower.includes("charges")))) {
+                    type = "pdf";
+                }
 
                 links.push({
                     url: absoluteUrl,
@@ -232,8 +268,6 @@ export async function crawlWithinScope(startUrl, maxDepth = 2, options = {}) {
 
         for (const link of links) {
             if (!isSameOrigin(link.url, root.href)) continue;
-            const linkPath = new URL(link.url).pathname.toLowerCase();
-            if (pathMustContain && !linkPath.includes(pathMustContain)) continue;
 
             if (link.type === "pdf") {
                 if (visitedPdfs.size >= pdfLimit) continue;
@@ -252,6 +286,8 @@ export async function crawlWithinScope(startUrl, maxDepth = 2, options = {}) {
                     keepQueryForPdf: false
                 });
                 if (!pageKey || visitedPages.has(pageKey)) continue;
+                const pagePath = new URL(pageKey).pathname.toLowerCase();
+                if (pathMustContain && !pagePath.includes(pathMustContain)) continue;
                 if (visitedPages.size + queue.length >= pageLimit) continue;
                 queue.push({
                     url: pageKey,

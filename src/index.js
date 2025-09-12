@@ -11,7 +11,19 @@ import {
     extractCardDetails
 } from "./extractor/Extractor.js";
 
-const START_URL = "https://www.hdfcbank.com/personal/pay/cards/credit-cards/diners-privilege";
+// Allow URL from CLI: node src/index.js <url>
+const cliArgUrl = process.argv[2];
+let START_URL = "https://www.hdfcbank.com/personal/pay/cards/credit-cards/indianoil-hdfc-bank-credit-card";
+if (cliArgUrl) {
+    try {
+        const candidate = new URL(cliArgUrl);
+        START_URL = candidate.href;
+    } catch {
+        console.warn("⚠️ Invalid URL provided via CLI. Falling back to default START_URL.");
+    }
+} else {
+    console.log("ℹ️ You can provide a URL: node src/index.js <url>");
+}
 
 async function run() {
     console.log("🚀 Starting HDFC Diners Club Privilege scraper...");
@@ -36,8 +48,7 @@ async function run() {
             links
         } = await crawlWithinScope(START_URL, 2, {
             pageLimit: 12,
-            pdfLimit: 12,
-            pathMustContain: "/personal/pay/cards/credit-cards/diners-privilege",
+            pdfLimit: 12
         });
 
         console.log(`📊 Crawl completed - Text length: ${text.length} characters`);
@@ -110,11 +121,11 @@ async function run() {
         console.log(`📊 Found ${extracted.offers?.length || 0} offers`);
 
         // Create issuer-based directory structure
-       const issuer = (
-           Array.isArray(extracted.offers) && extracted.offers[0] && extracted.offers[0].issuer ?
-           extracted.offers[0].issuer :
-           "HDFC"
-       ).toLowerCase();
+        const issuer = (
+            Array.isArray(extracted.offers) && extracted.offers[0] && extracted.offers[0].issuer ?
+            extracted.offers[0].issuer :
+            "HDFC"
+        ).toLowerCase();
 
         const issuerDir = path.join("data", issuer);
         if (!fs.existsSync(issuerDir)) {
@@ -127,25 +138,43 @@ async function run() {
         // Process card-wise offers
         const offers = Array.isArray(extracted.offers) ? extracted.offers : [];
         const cardToOffers = {};
+        const cardNameSafe = String(extracted.card_name || "hdfc_diners_club_privilege").replace(/[^a-z0-9]+/gi, "_").toLowerCase();
 
+        // Group offers by card applicability
         for (const offer of offers) {
             const cards = Array.isArray(offer.card_applicability) ? offer.card_applicability : [];
-            for (const c of cards) {
-                const key = String(c || cardNameSafe).replace(/[^a-z0-9]+/gi, "_").toLowerCase();
-                if (!cardToOffers[key]) cardToOffers[key] = [];
-                cardToOffers[key].push(offer);
+            if (cards.length === 0) {
+                // If no specific card applicability, assign to main card
+                if (!cardToOffers[cardNameSafe]) cardToOffers[cardNameSafe] = [];
+                cardToOffers[cardNameSafe].push(offer);
+            } else {
+                for (const c of cards) {
+                    const key = String(c).replace(/[^a-z0-9]+/gi, "_").toLowerCase();
+                    if (!cardToOffers[key]) cardToOffers[key] = [];
+                    cardToOffers[key].push(offer);
+                }
             }
         }
 
-        // Ensure main card has all offers if no specific applicability
-        if (!cardToOffers[cardNameSafe]) {
+        // If no offers were assigned to any specific card, assign all to main card
+        if (Object.keys(cardToOffers).length === 0) {
             cardToOffers[cardNameSafe] = offers;
         }
 
-        // Save card-specific JSON files
+        // Save card-specific JSON files with timestamp
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0] + '_' +
+            new Date().toISOString().replace(/[:.]/g, '-').split('T')[1].split('.')[0];
+
+        // Determine next numeric filename index within issuer directory
+        const existingFiles = fs.readdirSync(issuerDir)
+            .filter(f => /^(\d+)\.json$/i.test(f))
+            .map(f => parseInt(f.match(/^(\d+)\.json$/i)[1], 10))
+            .filter(n => Number.isFinite(n));
+        let nextIndex = existingFiles.length ? Math.max(...existingFiles) + 1 : 1;
+
         let savedFiles = 0;
         for (const [cardKey, cardOffers] of Object.entries(cardToOffers)) {
-            const target = path.join(issuerDir, `${cardKey}.json`);
+            const target = path.join(issuerDir, `${nextIndex}.json`);
             const payload = {
                 ...extracted,
                 offers: cardOffers,
@@ -157,6 +186,7 @@ async function run() {
                 fs.writeFileSync(target, JSON.stringify(payload, null, 2), "utf8");
                 console.log(`💾 Saved ${cardOffers.length} offers to ${target}`);
                 savedFiles++;
+                nextIndex++;
             } catch (error) {
                 console.error(`❌ Failed to save ${target}:`, error.message);
             }
