@@ -10,6 +10,9 @@ import {
 import {
     extractCardDetails
 } from "./extractor/Extractor.js";
+import {
+    extractBrandOffers
+} from "./extractor/Extractor.js";
 
 // Allow URL from CLI: node src/index.js <url>
 const cliArgUrl = process.argv[2];
@@ -55,23 +58,49 @@ async function run() {
 
         let allText = text;
 
-        // Process PDFs
+        // Process PDFs with limited concurrency
         const seenPdf = new Set();
-        let pdfCount = 0;
-
+        const pdfLinks = [];
         for (const link of links) {
             if (link.type !== "pdf") continue;
             if (seenPdf.has(link.url)) continue;
             seenPdf.add(link.url);
+            pdfLinks.push(link);
+        }
 
-            console.log(`\nProcessing PDF ${++pdfCount}/${links.length}: ${link.url}`);
-            const pdfText = await parsePdf(link.url, link.referer);
-            if (pdfText.trim()) {
-                allText += "\n\n[PDF:" + link.url + "]\n" + pdfText;
-                console.log(`✅ PDF parsed. Added ${pdfText.length} chars`);
-            } else {
-                console.log("PDF returned no text");
+        async function runWithConcurrency(items, limit, worker) {
+            const results = new Array(items.length);
+            let currentIndex = 0;
+            async function next() {
+                const idx = currentIndex++;
+                if (idx >= items.length) return;
+                try {
+                    results[idx] = await worker(items[idx], idx);
+                } catch (e) {
+                    results[idx] = null;
+                }
+                return next();
             }
+            const runners = Array.from({
+                length: Math.min(limit, items.length)
+            }, next);
+            await Promise.all(runners);
+            return results;
+        }
+
+        if (pdfLinks.length) {
+            console.log(`\nProcessing ${pdfLinks.length} PDFs with limited concurrency...`);
+            const concurrency = 3; // tune if needed
+            await runWithConcurrency(pdfLinks, concurrency, async (link, idx) => {
+                console.log(`\nProcessing PDF ${idx + 1}/${pdfLinks.length}: ${link.url}`);
+                const pdfText = await parsePdf(link.url, link.referer);
+                if (pdfText && pdfText.trim()) {
+                    allText += "\n\n[PDF:" + link.url + "]\n" + pdfText;
+                    console.log(`✅ PDF parsed. Added ${pdfText.length} chars`);
+                } else {
+                    console.log("PDF returned no text");
+                }
+            });
         }
 
         if (!fs.existsSync("./data")) {
@@ -91,6 +120,8 @@ async function run() {
 
         console.log("\nExtracting with OpenAI...");
 
+        // Try brand-keyed extraction first
+        const brandMap = await extractBrandOffers(allText);
         const extracted = await extractCardDetails(allText);
 
         if (!extracted) {
@@ -98,7 +129,7 @@ async function run() {
             return;
         }
 
-        console.log(`✅ Extraction OK. Card: ${extracted.card_name || 'Unknown'} | Offers: ${extracted.offers?.length || 0}`);
+        console.log(`✅ Extraction OK. Card: ${extracted?.card_name || 'Unknown'} | Offers: ${extracted?.offers?.length || 0}`);
 
         // Create issuer-based directory structure
         const issuer = (
@@ -116,7 +147,7 @@ async function run() {
         }
 
         // Process card-wise offers
-        const offers = Array.isArray(extracted.offers) ? extracted.offers : [];
+        const offers = Array.isArray(extracted?.offers)?extracted.offers : [];
         const cardToOffers = {};
         const cardNameSafe = String(extracted.card_name || "hdfc_diners_club_privilege").replace(/[^a-z0-9]+/gi, "_").toLowerCase();
 
@@ -153,12 +184,30 @@ async function run() {
         let savedFiles = 0;
         for (const [cardKey, cardOffers] of Object.entries(cardToOffers)) {
             const target = path.join(issuerDir, `${nextIndex}.json`);
-            const payload = {
-                ...extracted,
-                offers: cardOffers,
-                extraction_timestamp: new Date().toISOString(),
-                total_offers: cardOffers.length
-            };
+
+            // Prefer OpenAI brand map; if missing, synthesize from offers extracted earlier
+            let payload = brandMap && Object.keys(brandMap).length ? brandMap : {};
+            if (!Object.keys(payload).length) {
+                for (const offer of cardOffers) {
+                    const brandRaw = (offer.merchant || offer.title || "Unknown");
+                    const brand = String(brandRaw).trim();
+                    const validity = offer.validity || "";
+                    const description = offer.description || offer.title || "";
+                    const terms = Array.isArray(offer.terms_conditions) ? offer.terms_conditions.join(" ") : (offer.terms_conditions || "");
+
+                    if (!payload[brand]) {
+                        payload[brand] = {
+                            "validity": validity,
+                            "offer description": description,
+                            "t&c": terms
+                        };
+                    } else {
+                        payload[brand]["validity"] = [payload[brand]["validity"], validity].filter(Boolean).join(" | ");
+                        payload[brand]["offer description"] = [payload[brand]["offer description"], description].filter(Boolean).join(" | ");
+                        payload[brand]["t&c"] = [payload[brand]["t&c"], terms].filter(Boolean).join(" | ");
+                    }
+                }
+            }
 
             try {
                 fs.writeFileSync(target, JSON.stringify(payload, null, 2), "utf8");

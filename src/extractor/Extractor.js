@@ -127,37 +127,23 @@ async function processSingleChunk(content) {
 
 
 async function processMultipleChunks(chunks) {
-    const results = [];
-
     // Limit to first 3 chunks as requested to avoid excessive API usage
     const chunksToProcess = chunks.slice(0, 3);
     console.log(` Processing first ${chunksToProcess.length} chunks out of ${chunks.length} total`);
 
-    for (let i = 0; i < chunksToProcess.length; i++) {
-        console.log(`Processing chunk ${i + 1}/${chunksToProcess.length}`);
+    // Run OpenAI calls in parallel to reduce overall latency
+    const settled = await Promise.allSettled(
+        chunksToProcess.map((c, idx) => {
+            console.log(`Queueing chunk ${idx + 1}/${chunksToProcess.length}`);
+            return processSingleChunk(c);
+        })
+    );
 
-        try {
-            const chunkResult = await processSingleChunk(chunksToProcess[i]);
-            if (chunkResult) {
-                results.push(chunkResult);
-            }
+    const results = settled
+        .filter(r => r.status === 'fulfilled' && r.value)
+        .map(r => r.value);
 
-            // Add delay between API calls to avoid rate limits
-            if (i < chunksToProcess.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-
-        } catch (error) {
-            console.warn(`Failed to process chunk ${i + 1}:`, error.message);
-            continue;
-        }
-    }
-
-    // Merge results from multiple chunks
-    if (results.length === 0) {
-        return null;
-    }
-
+    if (results.length === 0) return null;
     return mergeChunkResults(results);
 }
 
@@ -328,6 +314,96 @@ export async function extractCardDetails(rawText) {
             return await processMultipleChunks(smallerChunks);
         }
 
+        return null;
+    }
+}
+
+// Brand-keyed offer extraction
+const brandOfferSchema = `You convert long, messy bank page text into a concise brand-keyed JSON.
+Return ONLY valid JSON with this exact structure, no markdown, no commentary:
+{
+  "Brand Name": {
+    "validity": "date or period",
+    "offer description": "clear, concise summary including caps, rates, eligibility",
+    "t&c": "key terms and conditions in one line"
+  }
+}
+
+Rules:
+- Normalize brand keys (e.g., "Swiggy", "Adidas", "Fortis Healthcare").
+- If multiple offers for the same brand exist, merge into one entry; concatenate fields using " | ".
+- Prefer concrete info from official terms and PDFs; include spending caps, usage limits, channels (SmartBuy, app, in-store), excluded items, and booking codes when available.
+- If a field is unknown, return an empty string.
+`;
+
+async function processSingleBrandChunk(content) {
+    try {
+        const completion = await openai.chat.completions.create({
+            model: "gpt-3.5-turbo",
+            messages: [{
+                    role: "system",
+                    content: brandOfferSchema
+                },
+                {
+                    role: "user",
+                    content: `Build the brand-keyed offers JSON from this content. Respond with ONLY JSON.\n\n${content}`
+                }
+            ],
+            temperature: 0,
+            max_tokens: 2000
+        });
+
+        const response = completion.choices[0]?.message?.content?.trim();
+        if (!response) return null;
+        const clean = sanitizeToJsonString(response);
+        return JSON.parse(clean);
+    } catch (e) {
+        console.warn(" Brand-offer chunk extraction failed:", e.message);
+        return null;
+    }
+}
+
+function mergeBrandMaps(maps) {
+    const merged = {};
+    for (const m of maps) {
+        if (!m || typeof m !== 'object') continue;
+        for (const [brandKey, val] of Object.entries(m)) {
+            const brand = String(brandKey).trim();
+            const validity = String(val ?.["validity"] || "").trim();
+            const desc = String(val ?.["offer description"] || "").trim();
+            const terms = String(val ?.["t&c"] || "").trim();
+
+            if (!merged[brand]) {
+                merged[brand] = {
+                    "validity": validity,
+                    "offer description": desc,
+                    "t&c": terms
+                };
+            } else {
+                const join = (a, b) => [a, b].filter(Boolean).join(" | ");
+                merged[brand]["validity"] = join(merged[brand]["validity"], validity);
+                merged[brand]["offer description"] = join(merged[brand]["offer description"], desc);
+                merged[brand]["t&c"] = join(merged[brand]["t&c"], terms);
+            }
+        }
+    }
+    return merged;
+}
+
+export async function extractBrandOffers(rawText) {
+    try {
+        const chunks = splitContent(rawText, 3000);
+        const chunksToProcess = chunks.slice(0, 3);
+        const settled = await Promise.allSettled(
+            chunksToProcess.map((c) => processSingleBrandChunk(c))
+        );
+        const maps = settled
+            .filter(r => r.status === 'fulfilled' && r.value)
+            .map(r => r.value);
+        if (maps.length === 0) return null;
+        return mergeBrandMaps(maps);
+    } catch (e) {
+        console.warn(" extractBrandOffers failed:", e.message);
         return null;
     }
 }
