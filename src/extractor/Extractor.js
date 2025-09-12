@@ -3,6 +3,7 @@ import {
     cardSchema
 } from "../config/ai.js";
 
+
 // Function to split large content into manageable chunks
 function splitContent(text, maxTokens = 4000) { // Much smaller chunks to avoid token limits
     const words = text.split(' ');
@@ -27,6 +28,29 @@ function splitContent(text, maxTokens = 4000) { // Much smaller chunks to avoid 
 
     return chunks;
 }
+
+function sanitizeToJsonString(input) {
+    let s = String(input || "");
+    // Normalize smart quotes to straight quotes
+    s = s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+    // Strip line and block comments
+    s = s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    // Remove markdown fences if any
+    s = s.replace(/```json\s*([\s\S]*?)\s*```/gi, '$1').replace(/```\s*([\s\S]*?)\s*```/g, '$1');
+    // Trim extraneous text outside the outermost JSON braces
+    const jsonMatch = s.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+    if (jsonMatch) s = jsonMatch[0];
+    // Ensure property names are quoted
+    s = s.replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_\-]*)\s*:/g, '$1"$2":');
+    // Convert single-quoted strings to double-quoted strings safely
+    s = s.replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, '"$1"');
+    // Remove trailing commas before } or ]
+    s = s.replace(/,\s*(?=[}\]])/g, '');
+    // Collapse illegal control whitespace
+    s = s.replace(/\u0000|\u0001|\u0002|\u0003|\u0004|\u0005|\u0006|\u0007|\u0008|\u000B|\u000C|\u000E|\u000F/g, '');
+    return s.trim();
+}
+
 async function processSingleChunk(content) {
     try {
         console.log("Calling OpenAI API...");
@@ -46,50 +70,24 @@ async function processSingleChunk(content) {
             max_tokens: 2500 // Reduced to leave more room for context
         });
 
-        
-         const response = completion.choices[0]?.message?.content?.trim();
+
+        const response = completion.choices[0]?.message?.content?.trim();
         if (!response) {
             console.warn("OpenAI returned empty response");
             return null;
         }
 
         console.log("OpenAI API response received");
-        
+
         // Try to clean up the response before parsing
-        let cleanResponse = response;
-        
-        // Remove any markdown code blocks if present
-        if (response.includes('```json')) {
-            const match = response.match(/```json\s*([\s\S]*?)\s*```/);
-            if (match) {
-                cleanResponse = match[1];
-            }
-        } else if (response.includes('```')) {
-            const match = response.match(/```\s*([\s\S]*?)\s*```/);
-            if (match) {
-                cleanResponse = match[1];
-            }
-        }
-        
-        // Try to find JSON if the response has extra text
-        if (!cleanResponse.trim().startsWith('{')) {
-            const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                cleanResponse = jsonMatch[0];
-            }
-        }
-        
+        let cleanResponse = sanitizeToJsonString(response);
+
         try {
             return JSON.parse(cleanResponse);
         } catch (parseError) {
-            console.warn(" JSON parsing failed, attempting to fix common issues...");
-            
-            // Try to fix common JSON issues
-            let fixedResponse = cleanResponse
-                .replace(/,(\s*[}\]])/g, '$1') // Remove trailing commas
-                .replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":') // Add quotes to unquoted keys
-                .replace(/:\s*([^",{\[\]}\s][^",{\[\]}\n]*?)(\s*[,}])/g, ':"$1"$2'); // Add quotes to unquoted values
-            
+            console.warn(" JSON parsing failed, applying sanitization...");
+            let fixedResponse = sanitizeToJsonString(cleanResponse);
+
             try {
                 return JSON.parse(fixedResponse);
             } catch (fixError) {
@@ -108,7 +106,8 @@ async function processSingleChunk(content) {
             if (jsonMatch) {
                 try {
                     console.log("Attempting to parse extracted JSON...");
-                    return JSON.parse(jsonMatch[0]);
+                    const sanitized = sanitizeToJsonString(jsonMatch[0]);
+                    return JSON.parse(sanitized);
                 } catch (e2) {
                     console.error("Could not parse JSON even after cleanup");
                     return null;
@@ -129,7 +128,7 @@ async function processSingleChunk(content) {
 
 async function processMultipleChunks(chunks) {
     const results = [];
-    
+
     // Limit to first 3 chunks as requested to avoid excessive API usage
     const chunksToProcess = chunks.slice(0, 3);
     console.log(` Processing first ${chunksToProcess.length} chunks out of ${chunks.length} total`);
