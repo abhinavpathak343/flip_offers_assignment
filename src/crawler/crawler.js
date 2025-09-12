@@ -7,11 +7,11 @@ function normalizeUrl(rawUrl, base, {
     try {
         const u = new URL(rawUrl, base);
         u.hash = ""; // strip fragments
-        const isPdf = u.pathname.toLowerCase().endsWith(".pdf");
+        const isPdf = u.pathname.toLowerCase().endsWith(".pdf") || u.href.includes('.pdf') || (u.searchParams.get('path') && u.searchParams.get('path').includes('.pdf'));
         if (!isPdf || !keepQueryForPdf) {
             u.search = ""; // drop query for normal pages to avoid duplicates
         }
-        if (u.pathname.length > 1 && u.pathname.endsWith("/")) {
+        if (u.pathname.length > 1 && u.pathname.endsWith("/") && !isPdf) {
             u.pathname = u.pathname.slice(0, -1);
         }
         return u.href;
@@ -171,6 +171,8 @@ export async function crawlPage(url) {
                     urlLower.includes("document") ||
                     urlLower.includes("brochure") ||
                     urlLower.includes("policy") ||
+                    absoluteUrl.includes('/content/bbp/repositories/') ||
+                    (absoluteUrl.includes('?path=') && absoluteUrl.includes('.pdf')) ||
                     (textLower.includes("click here") &&
                         (textLower.includes("t&c") ||
                             textLower.includes("terms") ||
@@ -188,7 +190,7 @@ export async function crawlPage(url) {
                 });
             });
 
-            console.log(`✅ Successfully crawled: ${url} (${text.length} chars, ${links.length} links)`);
+            console.log(`✅ Crawled: ${url} | Text: ${text.length} chars | Links: ${links.length}`);
             return {
                 text: " " + text,
                 links
@@ -198,26 +200,26 @@ export async function crawlPage(url) {
             lastError = err;
 
             if (err.code === 'ECONNABORTED' || err.message.includes('timeout')) {
-                console.log(`⏰ Timeout on attempt ${attempt}/${maxRetries} for ${url}`);
+                console.log(`Timeout on attempt ${attempt}/${maxRetries} for ${url}`);
             } else if (err.response && err.response.status === 404) {
-                console.log(`⏭️ Skipping 404: ${url}`);
+                console.log(`Skipping 404: ${url}`);
                 return {
                     text: "",
                     links: []
                 };
             } else {
-                console.warn(`⚠️ Error on attempt ${attempt}/${maxRetries}: ${err.message}`);
+                console.warn(`Error on attempt ${attempt}/${maxRetries}: ${err.message}`);
             }
 
             if (attempt < maxRetries) {
                 const waitTime = 2000 * attempt; // Progressive backoff
-                console.log(`⏳ Waiting ${waitTime}ms before retry...`);
+                console.log(`Waiting ${waitTime}ms before retry...`);
                 await new Promise(resolve => setTimeout(resolve, waitTime));
             }
         }
     }
 
-    console.error(`❌ Failed to crawl ${url} after ${maxRetries} attempts:`, lastError.message);
+    console.error(`Failed to crawl ${url} after ${maxRetries} attempts:`, lastError.message);
     return {
         text: "",
         links: []
@@ -243,8 +245,8 @@ export async function crawlWithinScope(startUrl, maxDepth = 2, options = {}) {
     const discoveredLinks = [];
     const root = new URL(startUrl);
 
-    console.log(`🚀 Starting crawl from: ${normalizedStart}`);
-    console.log(`📋 Scope: pages with path containing "${pathMustContain}"`);
+    console.log(`Starting crawl from: ${normalizedStart}`);
+    console.log(`Scope: path contains "${pathMustContain}"`);
 
     while (queue.length && visitedPages.size < pageLimit) {
         const {
@@ -300,7 +302,7 @@ export async function crawlWithinScope(startUrl, maxDepth = 2, options = {}) {
         await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
-    console.log(`📊 Crawled ${visitedPages.size} pages, found ${discoveredLinks.length} PDFs`);
+    console.log(`Crawl summary: pages=${visitedPages.size}, pdfs=${discoveredLinks.length}`);
     return {
         text: aggregatedText.trim(),
         links: discoveredLinks

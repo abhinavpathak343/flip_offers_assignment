@@ -4,7 +4,7 @@ import {
 } from "../config/ai.js";
 
 // Function to split large content into manageable chunks
-function splitContent(text, maxTokens = 15000) {
+function splitContent(text, maxTokens = 4000) { // Much smaller chunks to avoid token limits
     const words = text.split(' ');
     const chunks = [];
     let currentChunk = '';
@@ -29,7 +29,7 @@ function splitContent(text, maxTokens = 15000) {
 }
 async function processSingleChunk(content) {
     try {
-        console.log("🤖 Calling OpenAI API...");
+        console.log("Calling OpenAI API...");
 
         const completion = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
@@ -43,31 +43,74 @@ async function processSingleChunk(content) {
                 }
             ],
             temperature: 0,
-            max_tokens: 4000
+            max_tokens: 2500 // Reduced to leave more room for context
         });
 
         
          const response = completion.choices[0]?.message?.content?.trim();
         if (!response) {
-            console.warn("⚠️ OpenAI returned empty response");
+            console.warn("OpenAI returned empty response");
             return null;
         }
 
-        console.log("✅ OpenAI API response received");
-        return JSON.parse(response);
+        console.log("OpenAI API response received");
+        
+        // Try to clean up the response before parsing
+        let cleanResponse = response;
+        
+        // Remove any markdown code blocks if present
+        if (response.includes('```json')) {
+            const match = response.match(/```json\s*([\s\S]*?)\s*```/);
+            if (match) {
+                cleanResponse = match[1];
+            }
+        } else if (response.includes('```')) {
+            const match = response.match(/```\s*([\s\S]*?)\s*```/);
+            if (match) {
+                cleanResponse = match[1];
+            }
+        }
+        
+        // Try to find JSON if the response has extra text
+        if (!cleanResponse.trim().startsWith('{')) {
+            const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                cleanResponse = jsonMatch[0];
+            }
+        }
+        
+        try {
+            return JSON.parse(cleanResponse);
+        } catch (parseError) {
+            console.warn(" JSON parsing failed, attempting to fix common issues...");
+            
+            // Try to fix common JSON issues
+            let fixedResponse = cleanResponse
+                .replace(/,(\s*[}\]])/g, '$1') // Remove trailing commas
+                .replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":') // Add quotes to unquoted keys
+                .replace(/:\s*([^",{\[\]}\s][^",{\[\]}\n]*?)(\s*[,}])/g, ':"$1"$2'); // Add quotes to unquoted values
+            
+            try {
+                return JSON.parse(fixedResponse);
+            } catch (fixError) {
+                console.error("Could not parse JSON even after cleanup attempts");
+                console.log("Original response:", response.substring(0, 500) + "...");
+                throw parseError;
+            }
+        }
 
     } catch (e) {
-        console.warn("⚠️ OpenAI API call failed:", e.message);
+        console.warn(" OpenAI API call failed:", e.message);
 
         // If it's a JSON parsing error, try to extract JSON from the response
         if (e.message && typeof e.message === 'string') {
             const jsonMatch = e.message.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
                 try {
-                    console.log("🔧 Attempting to parse extracted JSON...");
+                    console.log("Attempting to parse extracted JSON...");
                     return JSON.parse(jsonMatch[0]);
                 } catch (e2) {
-                    console.error("❌ Could not parse JSON even after cleanup");
+                    console.error("Could not parse JSON even after cleanup");
                     return null;
                 }
             }
@@ -75,7 +118,7 @@ async function processSingleChunk(content) {
 
         // If it's an API error, log more details
         if (e.status || e.code) {
-            console.error(`❌ OpenAI API Error - Status: ${e.status}, Code: ${e.code}`);
+            console.error(`OpenAI API Error - Status: ${e.status}, Code: ${e.code}`);
         }
 
         return null;
@@ -86,23 +129,27 @@ async function processSingleChunk(content) {
 
 async function processMultipleChunks(chunks) {
     const results = [];
+    
+    // Limit to first 3 chunks as requested to avoid excessive API usage
+    const chunksToProcess = chunks.slice(0, 3);
+    console.log(` Processing first ${chunksToProcess.length} chunks out of ${chunks.length} total`);
 
-    for (let i = 0; i < chunks.length; i++) {
-        console.log(`🔄 Processing chunk ${i + 1}/${chunks.length}`);
+    for (let i = 0; i < chunksToProcess.length; i++) {
+        console.log(`Processing chunk ${i + 1}/${chunksToProcess.length}`);
 
         try {
-            const chunkResult = await processSingleChunk(chunks[i]);
+            const chunkResult = await processSingleChunk(chunksToProcess[i]);
             if (chunkResult) {
                 results.push(chunkResult);
             }
 
             // Add delay between API calls to avoid rate limits
-            if (i < chunks.length - 1) {
+            if (i < chunksToProcess.length - 1) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
 
         } catch (error) {
-            console.warn(`⚠️ Failed to process chunk ${i + 1}:`, error.message);
+            console.warn(`Failed to process chunk ${i + 1}:`, error.message);
             continue;
         }
     }
@@ -254,31 +301,31 @@ function mergeChunkResults(results) {
         }
     }
 
-    console.log(`✅ Merged ${results.length} chunk results into final data`);
+    console.log(`Merged ${results.length} chunk results into final data`);
     return merged;
 }
 
 export async function extractCardDetails(rawText) {
     try {
-        console.log(`📝 Processing content of ${rawText.length} characters`);
+        console.log(` Processing content of ${rawText.length} characters`);
 
         // Check if content is too large for single API call
-        const chunks = splitContent(rawText, 15000);
+        const chunks = splitContent(rawText, 4000); // Use smaller chunks
 
         if (chunks.length > 1) {
-            console.log(`📑 Splitting content into ${chunks.length} chunks`);
+            console.log(` Splitting content into ${chunks.length} chunks`);
             return await processMultipleChunks(chunks);
         } else {
             return await processSingleChunk(rawText);
         }
 
     } catch (err) {
-        console.error("❌ OpenAI extraction failed:", err.message);
+        console.error(" OpenAI extraction failed:", err.message);
 
         // If it's a token limit error, try splitting the content
         if (err.message.includes('maximum context length') || err.message.includes('tokens')) {
-            console.log("🔄 Retrying with smaller chunks due to token limit...");
-            const smallerChunks = splitContent(rawText, 10000);
+            console.log(" Retrying with smaller chunks due to token limit...");
+            const smallerChunks = splitContent(rawText, 2500); // Very small chunks for retry
             return await processMultipleChunks(smallerChunks);
         }
 

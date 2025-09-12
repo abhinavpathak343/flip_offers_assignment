@@ -9,7 +9,7 @@ export const openai = new OpenAI({
 // Enhanced schema for better extraction with detailed headings
 export const cardSchema = `
 You are an assistant that extracts structured details from credit card descriptions and web content.
-Extract information specifically about the HDFC Diners Club Privilege Credit Card.
+Extract information.
 Return ONLY valid JSON in this exact format:
 
 {

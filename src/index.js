@@ -1,4 +1,4 @@
-// src/index.js - Debug version with detailed logging
+// src/index.js
 import fs from "fs";
 import path from "path";
 import {
@@ -13,36 +13,31 @@ import {
 
 // Allow URL from CLI: node src/index.js <url>
 const cliArgUrl = process.argv[2];
-let START_URL = "https://www.hdfcbank.com/personal/pay/cards/credit-cards/indianoil-hdfc-bank-credit-card";
+let START_URL = "https://www.hdfcbank.com/personal/pay/cards/credit-cards/diners-privilege";
 if (cliArgUrl) {
     try {
         const candidate = new URL(cliArgUrl);
         START_URL = candidate.href;
     } catch {
-        console.warn("⚠️ Invalid URL provided via CLI. Falling back to default START_URL.");
+        console.warn("Invalid URL provided via CLI. Falling back to default START_URL.");
     }
 } else {
-    console.log("ℹ️ You can provide a URL: node src/index.js <url>");
+    console.log("You can provide a URL: node src/index.js <url>");
 }
 
 async function run() {
-    console.log("🚀 Starting HDFC Diners Club Privilege scraper...");
-    console.log("🎯 Target URL:", START_URL);
+    console.log("\n=== Start ===");
+    console.log("Target URL:", START_URL);
 
     try {
-        // Check for OpenAI API key first
-        console.log("🔑 Checking OpenAI API key...");
+        console.log("\nValidating configuration...");
         if (!process.env.OPENAI_API_KEY) {
-            console.error('❌ OPENAI_API_KEY not found in environment variables');
-            console.log('💡 Please create a .env file with: OPENAI_API_KEY=your_key_here');
+            console.error('OPENAI_API_KEY missing. Create .env with OPENAI_API_KEY=your_key_here');
             process.exit(1);
         }
-        console.log("✅ OpenAI API key found");
+        console.log("✅ Configuration OK");
 
-        // Test network connectivity
-        console.log("🌐 Testing network connectivity...");
-
-        console.log("📡 Starting crawl process...");
+        console.log("\nCrawling...");
         const {
             text,
             links
@@ -51,21 +46,16 @@ async function run() {
             pdfLimit: 12
         });
 
-        console.log(`📊 Crawl completed - Text length: ${text.length} characters`);
-        console.log(`📄 Found ${links.length} PDF links`);
+        console.log(`✅ Crawl complete. Text: ${text.length} chars. PDFs found: ${links.length}`);
 
         if (!text || text.length === 0) {
-            console.error("❌ No content extracted from crawling");
-            console.log("🔍 This could mean:");
-            console.log("  - Network connectivity issues");
-            console.log("  - Website blocking requests");
-            console.log("  - Invalid URL or path filters");
+            console.error("No content extracted from crawling");
             process.exit(1);
         }
 
         let allText = text;
 
-        // Process PDFs with deduplication
+        // Process PDFs
         const seenPdf = new Set();
         let pdfCount = 0;
 
@@ -74,51 +64,41 @@ async function run() {
             if (seenPdf.has(link.url)) continue;
             seenPdf.add(link.url);
 
-            console.log(`📄 Processing PDF ${++pdfCount}/${links.length}: ${link.url}`);
+            console.log(`\nProcessing PDF ${++pdfCount}/${links.length}: ${link.url}`);
             const pdfText = await parsePdf(link.url, link.referer);
             if (pdfText.trim()) {
                 allText += "\n\n[PDF:" + link.url + "]\n" + pdfText;
-                console.log(`✅ PDF processed, added ${pdfText.length} characters`);
+                console.log(`✅ PDF parsed. Added ${pdfText.length} chars`);
             } else {
-                console.log("⚠️ PDF processing returned empty content");
+                console.log("PDF returned no text");
             }
         }
 
-        // Ensure data directory exists
         if (!fs.existsSync("./data")) {
             fs.mkdirSync("./data", {
                 recursive: true
             });
-            console.log("📁 Created data directory");
+            console.log("\n✅ Created data directory");
         }
 
-        // Save raw content
         try {
             fs.writeFileSync("./data/output.txt", allText, "utf8");
-            console.log(`💾 Saved raw output to ./data/output.txt (${allText.length} characters)`);
+            console.log(`\n✅ Saved raw text to data/output.txt (${allText.length} chars)`);
         } catch (error) {
-            console.error("❌ Failed to save raw output:", error.message);
+            console.error("Failed to save raw text:", error.message);
             process.exit(1);
         }
 
-        // Extract structured data using OpenAI
-        console.log("🤖 Starting OpenAI extraction...");
-        console.log(`📝 Sending ${allText.length} characters to OpenAI`);
+        console.log("\nExtracting with OpenAI...");
 
         const extracted = await extractCardDetails(allText);
 
         if (!extracted) {
-            console.warn("⚠️ No structured data extracted from OpenAI");
-            console.log("🔍 Possible issues:");
-            console.log("  - OpenAI API key invalid");
-            console.log("  - Content too large or malformed");
-            console.log("  - OpenAI service temporarily unavailable");
-            console.log("  - Check ./data/output.txt to verify scraped content");
+            console.log("Extraction failed or returned empty data");
             return;
         }
 
-        console.log(`✅ Successfully extracted data for: ${extracted.card_name || 'Unknown Card'}`);
-        console.log(`📊 Found ${extracted.offers?.length || 0} offers`);
+        console.log(`✅ Extraction OK. Card: ${extracted.card_name || 'Unknown'} | Offers: ${extracted.offers?.length || 0}`);
 
         // Create issuer-based directory structure
         const issuer = (
@@ -132,7 +112,7 @@ async function run() {
             fs.mkdirSync(issuerDir, {
                 recursive: true
             });
-            console.log(`📁 Created issuer directory: ${issuerDir}`);
+            console.log(`✅ Created issuer directory: ${issuerDir}`);
         }
 
         // Process card-wise offers
@@ -161,11 +141,9 @@ async function run() {
             cardToOffers[cardNameSafe] = offers;
         }
 
-        // Save card-specific JSON files with timestamp
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0] + '_' +
             new Date().toISOString().replace(/[:.]/g, '-').split('T')[1].split('.')[0];
 
-        // Determine next numeric filename index within issuer directory
         const existingFiles = fs.readdirSync(issuerDir)
             .filter(f => /^(\d+)\.json$/i.test(f))
             .map(f => parseInt(f.match(/^(\d+)\.json$/i)[1], 10))
@@ -184,35 +162,33 @@ async function run() {
 
             try {
                 fs.writeFileSync(target, JSON.stringify(payload, null, 2), "utf8");
-                console.log(`💾 Saved ${cardOffers.length} offers to ${target}`);
+                console.log(`✅ Saved JSON -> ${target} (offers: ${cardOffers.length})`);
                 savedFiles++;
                 nextIndex++;
             } catch (error) {
-                console.error(`❌ Failed to save ${target}:`, error.message);
+                console.error(`Failed to save ${target}:`, error.message);
             }
         }
 
-        console.log(`🎉 Scraping completed successfully! Saved ${savedFiles} files.`);
+        console.log(`\n✅ Done. Files saved: ${savedFiles}\n`);
 
     } catch (error) {
-        console.error("❌ Application error:", error.message);
-        console.error("📍 Error stack:", error.stack);
+        console.error("Application error:", error.message);
+        console.error(error.stack);
         process.exit(1);
     }
 }
 
-// Add process handlers for better debugging
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+    console.error('Unhandled Rejection:', reason);
     process.exit(1);
 });
 
 process.on('uncaughtException', (error) => {
-    console.error('❌ Uncaught Exception:', error);
+    console.error('Uncaught Exception:', error);
     process.exit(1);
 });
 
-// Create .env file template if it doesn't exist
 if (!fs.existsSync('.env')) {
     const envTemplate = `# OpenAI API Configuration
 OPENAI_API_KEY=your_openai_api_key_here
@@ -223,14 +199,14 @@ OPENAI_API_KEY=your_openai_api_key_here
 
     try {
         fs.writeFileSync('.env', envTemplate);
-        console.log('📝 Created .env template file. Please add your OpenAI API key.');
+        console.log('Created .env template file. Add your OpenAI API key.');
     } catch (error) {
-        console.error('❌ Could not create .env file:', error.message);
+        console.error('Could not create .env file:', error.message);
     }
 }
 
-console.log("🔧 Debug mode enabled - Starting application...");
+console.log("Starting application...\n");
 run().catch(error => {
-    console.error("❌ Fatal error in main function:", error);
+    console.error("Fatal error in main function:", error);
     process.exit(1);
 });
