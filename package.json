@@ -1,0 +1,23 @@
+{
+  "name": "flip_assignment",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "type": "module",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "axios": "^1.11.0",
+    "canvas": "^3.2.0",
+    "cheerio": "^1.1.2",
+    "dotenv": "^17.2.2",
+    "fs-extra": "^11.3.1",
+    "openai": "^5.20.1",
+    "p-limit": "^7.1.1",
+    "pdfjs-dist": "^3.11.174"
+  }
+}
