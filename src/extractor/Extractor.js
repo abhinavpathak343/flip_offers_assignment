@@ -3,22 +3,55 @@ import {
     cardSchema
 } from "../config/ai.js";
 
+// Request batching
+const BATCH_SIZE = 3;
 
-// Function to split large content into manageable chunks
-function splitContent(text, maxTokens = 400) { // Small chunks for OpenAI
-    const words = text.split(' ');
+
+// Optimized content preprocessing
+function preprocessContent(text) {
+    // Remove excessive whitespace and normalize
+    let processed = text
+        .replace(/\s+/g, ' ')
+        .replace(/\n\s*\n/g, '\n')
+        .trim();
+
+    // Remove common page elements that don't contain useful card info
+    processed = processed
+        .replace(/You've Been Logged Out.*?OK/gs, '') // Remove logout messages
+        .replace(/For security reasons.*?OK/gs, '') // Remove security messages
+        .replace(/Login.*?Logout/gs, '') // Remove login/logout sections
+        .replace(/{{.*?}}/g, '') // Remove template variables
+        .replace(/javascript:.*?;/g, '') // Remove javascript
+        .replace(/tel:.*?/g, '') // Remove phone numbers
+        .replace(/mailto:.*?/g, '') // Remove email addresses
+        .replace(/https?:\/\/[^\s]+/g, '') // Remove URLs
+        .replace(/\b\d{10,}\b/g, '') // Remove long numbers (likely IDs)
+        .replace(/\b[A-Z]{2,}_[A-Z]{2,}\b/g, '') // Remove constants like API_KEYS
+        .replace(/\b[A-Z]{3,}\b/g, '') // Remove all caps words (likely navigation)
+        .replace(/\s+/g, ' ') // Normalize whitespace again
+        .trim();
+
+    return processed;
+}
+
+// Function to split large content into manageable chunks with better token estimation
+function splitContent(text, maxTokens = 400) {
+    const preprocessed = preprocessContent(text);
+    const words = preprocessed.split(' ');
     const chunks = [];
     let currentChunk = '';
+    let currentTokens = 0;
 
     for (const word of words) {
-        // Rough estimation: 1 token ≈ 4 characters
-        if ((currentChunk + word).length > maxTokens * 4) {
-            if (currentChunk) {
-                chunks.push(currentChunk.trim());
-                currentChunk = word + ' ';
-            }
+        const wordTokens = Math.ceil(word.length / 3.5); // More accurate token estimation
+
+        if (currentTokens + wordTokens > maxTokens && currentChunk) {
+            chunks.push(currentChunk.trim());
+            currentChunk = word + ' ';
+            currentTokens = wordTokens;
         } else {
             currentChunk += word + ' ';
+            currentTokens += wordTokens;
         }
     }
 
@@ -180,8 +213,27 @@ function extractPartialJsonData(malformedJson) {
     }
 }
 
+
+// Batch processing for multiple chunks
+async function processBatchChunks(chunks, isBrandExtraction = false) {
+    const batchPromises = [];
+
+    for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+        const batch = chunks.slice(i, i + BATCH_SIZE);
+        const batchPromise = Promise.allSettled(
+            batch.map(chunk =>
+                isBrandExtraction ? processSingleBrandChunk(chunk) : processSingleChunk(chunk)
+            )
+        );
+        batchPromises.push(batchPromise);
+    }
+
+    const results = await Promise.all(batchPromises);
+    return results.flat().filter(r => r.status === 'fulfilled' && r.value).map(r => r.value);
+}
+
 async function processSingleChunk(content) {
-    const maxRetries = 3;
+    const maxRetries = 2; // Reduced retries for faster failure
     let lastError;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -199,11 +251,11 @@ async function processSingleChunk(content) {
                         content: `Extract credit card details from this content:\n\n${content}`
                     }
                 ],
-                temperature: 0.3,
-                max_tokens: 2000
+                temperature: 0.1, // Lower temperature for more consistent results
+                max_tokens: 1500 // Reduced for faster response
             });
 
-            const response = completion.choices[0]?.message?.content?.trim();
+            const response = completion.choices[0]?.message ?.content ?.trim();
             if (!response) {
                 console.warn(`OpenAI returned empty response on attempt ${attempt}`);
                 if (attempt < maxRetries) {
@@ -287,17 +339,8 @@ async function processMultipleChunks(chunks) {
     const chunksToProcess = chunks.slice(0, 3); // Reduced to 3 chunks
     console.log(` Processing first ${chunksToProcess.length} chunks out of ${chunks.length} total`);
 
-    // Run OpenAI calls in parallel to reduce overall latency
-    const settled = await Promise.allSettled(
-        chunksToProcess.map((c, idx) => {
-            console.log(`Queueing chunk ${idx + 1}/${chunksToProcess.length}`);
-            return processSingleChunk(c);
-        })
-    );
-
-    const results = settled
-        .filter(r => r.status === 'fulfilled' && r.value)
-        .map(r => r.value);
+    // Use batch processing for better performance
+    const results = await processBatchChunks(chunksToProcess, false);
 
     if (results.length === 0) return null;
     return mergeChunkResults(results);
@@ -450,13 +493,29 @@ export async function extractCardDetails(rawText) {
     try {
         console.log(` Processing content of ${rawText.length} characters`);
 
-        // Use small chunks for OpenAI
-        const chunks = splitContent(rawText, 400);
+        // Preprocess content for better performance
+        const preprocessedText = preprocessContent(rawText);
+        console.log(` Preprocessed content: ${preprocessedText.length} characters`);
+
+        // Check if we have meaningful content
+        if (preprocessedText.length < 100) {
+            console.warn(" Content too short after preprocessing, trying original text");
+            const fallbackChunks = splitContent(rawText, 500);
+            if (fallbackChunks.length > 0) {
+                return await processMultipleChunks(fallbackChunks);
+            }
+        }
+
+        // Use optimized chunks for OpenAI
+        const chunks = splitContent(preprocessedText, 500); // Slightly larger chunks for better context
 
         if (chunks.length > 1) {
             console.log(` Splitting content into ${chunks.length} chunks`);
             return await processMultipleChunks(chunks);
+        } else if (chunks.length === 1) {
+            return await processSingleChunk(preprocessedText);
         } else {
+            console.warn(" No chunks created, trying original text");
             return await processSingleChunk(rawText);
         }
 
@@ -466,7 +525,7 @@ export async function extractCardDetails(rawText) {
         // If it's a token limit error, try splitting the content
         if (err.message.includes('maximum context length') || err.message.includes('tokens')) {
             console.log(" Retrying with smaller chunks due to token limit...");
-            const smallerChunks = splitContent(rawText, 300); // Even smaller chunks for retry
+            const smallerChunks = splitContent(preprocessContent(rawText), 300);
             return await processMultipleChunks(smallerChunks);
         }
 
@@ -555,7 +614,7 @@ function extractPartialBrandData(malformedJson) {
 }
 
 async function processSingleBrandChunk(content) {
-    const maxRetries = 3;
+    const maxRetries = 2; // Reduced retries
     let lastError;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -573,11 +632,11 @@ async function processSingleBrandChunk(content) {
                         content: `Build the brand-keyed offers JSON from this content. Respond with ONLY JSON.\n\n${content}`
                     }
                 ],
-                temperature: 0.3,
-                max_tokens: 1000
+                temperature: 0.1, // Lower temperature for consistency
+                max_tokens: 800 // Reduced for faster response
             });
 
-            const response = completion.choices[0]?.message?.content?.trim();
+            const response = completion.choices[0] ?.message ?.content ?.trim();
             if (!response) {
                 console.warn(`OpenAI returned empty response for brand extraction on attempt ${attempt}`);
                 if (attempt < maxRetries) {
@@ -616,7 +675,7 @@ async function processSingleBrandChunk(content) {
         }
     }
 
-    console.error(`Failed to process brand chunk after ${maxRetries} attempts:`,lastError?.message);
+    console.error(`Failed to process brand chunk after ${maxRetries} attempts:`, lastError ?.message);
     return null;
 }
 
@@ -626,9 +685,9 @@ function mergeBrandMaps(maps) {
         if (!m || typeof m !== 'object') continue;
         for (const [brandKey, val] of Object.entries(m)) {
             const brand = String(brandKey).trim();
-            const validity = String(val ?.["validity"] || "").trim();
-            const desc = String(val ?.["offer description"] || "").trim();
-            const terms = String(val ?.["t&c"] || "").trim();
+            const validity = String(val ?. ["validity"] || "").trim();
+            const desc = String(val ?. ["offer description"] || "").trim();
+            const terms = String(val ?. ["t&c"] || "").trim();
 
             if (!merged[brand]) {
                 merged[brand] = {
@@ -649,28 +708,25 @@ function mergeBrandMaps(maps) {
 
 export async function extractBrandOffers(rawText) {
     try {
-        const chunks = splitContent(rawText, 400); // Small chunks for brand extraction
-        const chunksToProcess = chunks.slice(0, 3); // Reduced to 3 chunks
+        // Preprocess content first
+        const preprocessedText = preprocessContent(rawText);
 
-        // Process chunks sequentially with early termination
-        const maps = [];
-        for (let i = 0; i < chunksToProcess.length; i++) {
-            console.log(`Processing brand chunk ${i + 1}/${chunksToProcess.length}`);
-            const result = await processSingleBrandChunk(chunksToProcess[i]);
-            if (result) {
-                maps.push(result);
+        // Try preprocessed content first
+        let chunks = splitContent(preprocessedText, 400);
 
-                // Early termination: if we have 5+ brands, we likely have enough
-                const merged = mergeBrandMaps(maps);
-                if (Object.keys(merged).length >= 5) {
-                    console.log(`Early termination: Found ${Object.keys(merged).length} brands`);
-                    return merged;
-                }
-            }
+        // If preprocessing removed too much, try original text
+        if (chunks.length === 0 || preprocessedText.length < 50) {
+            console.warn(" Brand extraction: trying original text due to minimal preprocessed content");
+            chunks = splitContent(rawText, 400);
         }
 
-        if (maps.length === 0) return null;
-        return mergeBrandMaps(maps);
+        const chunksToProcess = chunks.slice(0, 3); // Reduced to 3 chunks
+
+        // Use batch processing for better performance
+        const results = await processBatchChunks(chunksToProcess, true);
+
+        if (results.length === 0) return null;
+        return mergeBrandMaps(results);
     } catch (e) {
         console.warn(" extractBrandOffers failed:", e.message);
         return null;

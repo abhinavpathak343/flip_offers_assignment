@@ -8,9 +8,7 @@ import {
     parsePdf
 } from "./crawler/pdfparse.js";
 import {
-    extractCardDetails
-} from "./extractor/Extractor.js";
-import {
+    extractCardDetails,
     extractBrandOffers
 } from "./extractor/Extractor.js";
 
@@ -134,7 +132,7 @@ async function run() {
 
         let allText = text;
 
-        // Process PDFs with limited concurrency
+        // Process PDFs with optimized concurrency
         const seenPdf = new Set();
         const pdfLinks = [];
         for (const link of links) {
@@ -144,37 +142,58 @@ async function run() {
             pdfLinks.push(link);
         }
 
+        // Optimized concurrency control
         async function runWithConcurrency(items, limit, worker) {
             const results = new Array(items.length);
+            const semaphore = new Array(limit).fill(null);
             let currentIndex = 0;
-            async function next() {
+
+            async function processNext() {
                 const idx = currentIndex++;
                 if (idx >= items.length) return;
+
                 try {
                     results[idx] = await worker(items[idx], idx);
                 } catch (e) {
+                    console.warn(`PDF processing failed for item ${idx}:`, e.message);
                     results[idx] = null;
                 }
-                return next();
+
+                // Process next item
+                if (currentIndex < items.length) {
+                    return processNext();
+                }
             }
-            const runners = Array.from({
-                length: Math.min(limit, items.length)
-            }, next);
-            await Promise.all(runners);
+
+            // Start initial batch
+            const initialBatch = Math.min(limit, items.length);
+            const promises = Array.from({
+                length: initialBatch
+            }, processNext);
+            await Promise.all(promises);
+
             return results;
         }
 
         if (pdfLinks.length) {
-            console.log(`\nProcessing ${pdfLinks.length} PDFs with limited concurrency...`);
-            const concurrency = 5; // increased for better performance
-            await runWithConcurrency(pdfLinks, concurrency, async (link, idx) => {
+            console.log(`\nProcessing ${pdfLinks.length} PDFs with optimized concurrency...`);
+            const concurrency = 3; // Optimized for better resource usage
+            const pdfResults = await runWithConcurrency(pdfLinks, concurrency, async (link, idx) => {
                 console.log(`\nProcessing PDF ${idx + 1}/${pdfLinks.length}: ${link.url}`);
                 const pdfText = await parsePdf(link.url, link.referer);
                 if (pdfText && pdfText.trim()) {
-                    allText += "\n\n[PDF:" + link.url + "]\n" + pdfText;
                     console.log(`✅ PDF parsed. Added ${pdfText.length} chars`);
+                    return pdfText;
                 } else {
                     console.log("PDF returned no text");
+                    return null;
+                }
+            });
+
+            // Add PDF content to allText
+            pdfResults.forEach((pdfText, idx) => {
+                if (pdfText) {
+                    allText += "\n\n[PDF:" + pdfLinks[idx].url + "]\n" + pdfText;
                 }
             });
         }
@@ -199,23 +218,40 @@ async function run() {
 
         console.log("\nExtracting with OpenAI...");
 
+        // Performance monitoring
+        const startTime = Date.now();
+
         // Try brand-keyed extraction first (use trimmed content)
+        const brandStartTime = Date.now();
         const brandMap = await extractBrandOffers(trimmedText);
+        const brandTime = Date.now() - brandStartTime;
+        console.log(`Brand extraction completed in ${brandTime}ms`);
+
+        const cardStartTime = Date.now();
         const extracted = await extractCardDetails(trimmedText);
+        const cardTime = Date.now() - cardStartTime;
+        console.log(`Card extraction completed in ${cardTime}ms`);
 
         if (!extracted) {
             console.log("Extraction failed or returned empty data");
             return;
         }
 
-        console.log(`✅ Extraction OK. Card: ${extracted?.card_name || 'Unknown'} | Offers: ${extracted?.offers?.length || 0}`);
+        console.log(`✅ Extraction OK.`);
 
-        // Create issuer-based directory structure
-        const issuer = (
-            Array.isArray(extracted.offers) && extracted.offers[0] && extracted.offers[0].issuer ?
-            extracted.offers[0].issuer :
-            "HDFC"
-        ).toLowerCase();
+        // Create issuer-based directory structure - normalize issuer name
+        let issuer = "hdfc"; // Default fallback
+
+        if (extracted.issuer) {
+            // Normalize issuer name to prevent multiple folders
+            issuer = extracted.issuer
+                .toLowerCase()
+                .replace(/\s+/g, '_') // Replace spaces with underscores
+                .replace(/[^a-z0-9_]/g, '') // Remove special characters
+                .replace(/^hdfc.*/, 'hdfc') // Normalize HDFC variations
+                .replace(/^diners.*/, 'hdfc') // Normalize Diners Club to HDFC
+                .replace(/^bank.*/, 'hdfc'); // Normalize bank variations
+        }
 
         const issuerDir = path.join("data", issuer);
         if (!fs.existsSync(issuerDir)) {
@@ -226,7 +262,7 @@ async function run() {
         }
 
         // Process card-wise offers
-        const offers = Array.isArray(extracted?.offers)?extracted.offers : [];
+        const offers = Array.isArray(extracted ?.offers) ? extracted.offers : [];
         const cardToOffers = {};
         const cardNameSafe = String(extracted.card_name || "hdfc_diners_club_privilege").replace(/[^a-z0-9]+/gi, "_").toLowerCase();
 
@@ -313,7 +349,11 @@ async function run() {
             }
         }
 
-        console.log(`\n✅ Done. Files saved: ${savedFiles}\n`);
+        const totalTime = Date.now() - startTime;
+
+        console.log(`\n✅ Done. Files saved: ${savedFiles}`);
+        console.log(`⏱️  Total processing time: ${totalTime}ms`);
+
 
     } catch (error) {
         console.error("Application error:", error.message);
