@@ -5,7 +5,7 @@ import {
 
 
 // Function to split large content into manageable chunks
-function splitContent(text, maxTokens = 2000) { // Smaller chunks for faster processing
+function splitContent(text, maxTokens = 400) { // Small chunks for OpenAI
     const words = text.split(' ');
     const chunks = [];
     let currentChunk = '';
@@ -181,96 +181,110 @@ function extractPartialJsonData(malformedJson) {
 }
 
 async function processSingleChunk(content) {
-    try {
-        console.log("Calling OpenAI API...");
+    const maxRetries = 3;
+    let lastError;
 
-        const completion = await openai.chat.completions.create({
-            model: "gpt-5",
-            messages: [{
-                    role: "system",
-                    content: cardSchema
-                },
-                {
-                    role: "user",
-                    content: `Extract credit card details from this content:\n\n${content}`
-                }
-            ],
-            temperature: 1,
-            max_completion_tokens: 1500 // Reduced for faster response
-        });
-
-
-        const response = completion.choices[0]?.message?.content?.trim();
-        if (!response) {
-            console.warn("OpenAI returned empty response");
-            return null;
-        }
-
-        console.log("OpenAI API response received");
-
-        // Try to clean up the response before parsing
-        let cleanResponse = sanitizeToJsonString(response);
-
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            return JSON.parse(cleanResponse);
-        } catch (parseError) {
-            console.warn(" JSON parsing failed, applying enhanced sanitization...");
-            let fixedResponse = sanitizeToJsonString(cleanResponse);
+            console.log(`Calling OpenAI API... (attempt ${attempt}/${maxRetries})`);
+
+            const completion = await openai.chat.completions.create({
+                model: "gpt-4o-mini",
+                messages: [{
+                        role: "system",
+                        content: cardSchema
+                    },
+                    {
+                        role: "user",
+                        content: `Extract credit card details from this content:\n\n${content}`
+                    }
+                ],
+                temperature: 0.3,
+                max_tokens: 2000
+            });
+
+            const response = completion.choices[0]?.message?.content?.trim();
+            if (!response) {
+                console.warn(`OpenAI returned empty response on attempt ${attempt}`);
+                if (attempt < maxRetries) {
+                    await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+                    continue;
+                }
+                return null;
+            }
+
+            console.log("OpenAI API response received");
+
+            // Try to clean up the response before parsing
+            let cleanResponse = sanitizeToJsonString(response);
 
             try {
-                return JSON.parse(fixedResponse);
-            } catch (fixError) {
-                console.warn("Enhanced sanitization failed, trying partial extraction...");
+                return JSON.parse(cleanResponse);
+            } catch (parseError) {
+                console.warn("JSON parsing failed, applying enhanced sanitization...");
+                let fixedResponse = sanitizeToJsonString(cleanResponse);
 
-                // Try to extract partial data from malformed JSON
                 try {
-                    const partialData = extractPartialJsonData(cleanResponse);
-                    if (partialData && Object.keys(partialData).length > 0) {
-                        console.log("Successfully extracted partial data from malformed JSON");
-                        return partialData;
+                    return JSON.parse(fixedResponse);
+                } catch (fixError) {
+                    console.warn("Enhanced sanitization failed, trying partial extraction...");
+
+                    // Try to extract partial data from malformed JSON
+                    try {
+                        const partialData = extractPartialJsonData(cleanResponse);
+                        if (partialData && Object.keys(partialData).length > 0) {
+                            console.log("Successfully extracted partial data from malformed JSON");
+                            return partialData;
+                        }
+                    } catch (partialError) {
+                        console.warn("Partial extraction also failed:", partialError.message);
                     }
-                } catch (partialError) {
-                    console.warn("Partial extraction also failed:", partialError.message);
-                }
 
-                console.error("Could not parse JSON even after all cleanup attempts");
-                console.log("Original response (first 500 chars):", response.substring(0, 500) + "...");
-                return null; // Return null instead of throwing to allow processing to continue
-            }
-        }
-
-    } catch (e) {
-        console.warn(" OpenAI API call failed:", e.message);
-
-        // If it's a JSON parsing error, try to extract JSON from the response
-        if (e.message && typeof e.message === 'string') {
-            const jsonMatch = e.message.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                try {
-                    console.log("Attempting to parse extracted JSON...");
-                    const sanitized = sanitizeToJsonString(jsonMatch[0]);
-                    return JSON.parse(sanitized);
-                } catch (e2) {
-                    console.error("Could not parse JSON even after cleanup");
-                    return null;
+                    console.error("Could not parse JSON even after all cleanup attempts");
+                    console.log("Original response (first 500 chars):", response.substring(0, 500) + "...");
+                    return null; // Return null instead of throwing to allow processing to continue
                 }
             }
-        }
 
-        // If it's an API error, log more details
-        if (e.status || e.code) {
-            console.error(`OpenAI API Error - Status: ${e.status}, Code: ${e.code}`);
-        }
+        } catch (e) {
+            lastError = e;
+            console.warn(`OpenAI API call failed on attempt ${attempt}:`, e.message);
 
-        return null;
+            // If it's a JSON parsing error, try to extract JSON from the response
+            if (e.message && typeof e.message === 'string') {
+                const jsonMatch = e.message.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    try {
+                        console.log("Attempting to parse extracted JSON...");
+                        const sanitized = sanitizeToJsonString(jsonMatch[0]);
+                        return JSON.parse(sanitized);
+                    } catch (e2) {
+                        console.error("Could not parse JSON even after cleanup");
+                    }
+                }
+            }
+
+            // If it's an API error, log more details
+            if (e.status || e.code) {
+                console.error(`OpenAI API Error - Status: ${e.status}, Code: ${e.code}`);
+            }
+
+            if (attempt < maxRetries) {
+                console.log(`Retrying in ${1000 * attempt}ms...`);
+                await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+            }
+        }
     }
+
+    console.error(`Failed to process chunk after ${maxRetries} attempts:`, lastError ?.message);
+    return null;
 }
 
 
 
 async function processMultipleChunks(chunks) {
-    // Limit to first 2 chunks for faster processing
-    const chunksToProcess = chunks.slice(0, 2);
+    // Process fewer chunks to avoid API overload
+    const chunksToProcess = chunks.slice(0, 3); // Reduced to 3 chunks
     console.log(` Processing first ${chunksToProcess.length} chunks out of ${chunks.length} total`);
 
     // Run OpenAI calls in parallel to reduce overall latency
@@ -436,8 +450,8 @@ export async function extractCardDetails(rawText) {
     try {
         console.log(` Processing content of ${rawText.length} characters`);
 
-        // Check if content is too large for single API call
-        const chunks = splitContent(rawText, 2000); // Use smaller chunks
+        // Use small chunks for OpenAI
+        const chunks = splitContent(rawText, 400);
 
         if (chunks.length > 1) {
             console.log(` Splitting content into ${chunks.length} chunks`);
@@ -452,7 +466,7 @@ export async function extractCardDetails(rawText) {
         // If it's a token limit error, try splitting the content
         if (err.message.includes('maximum context length') || err.message.includes('tokens')) {
             console.log(" Retrying with smaller chunks due to token limit...");
-            const smallerChunks = splitContent(rawText, 1500); // Very small chunks for retry
+            const smallerChunks = splitContent(rawText, 300); // Even smaller chunks for retry
             return await processMultipleChunks(smallerChunks);
         }
 
@@ -541,45 +555,69 @@ function extractPartialBrandData(malformedJson) {
 }
 
 async function processSingleBrandChunk(content) {
-    try {
-        const completion = await openai.chat.completions.create({
-            model: "gpt-5",
-            messages: [{
-                    role: "system",
-                    content: brandOfferSchema
-                },
-                {
-                    role: "user",
-                    content: `Build the brand-keyed offers JSON from this content. Respond with ONLY JSON.\n\n${content}`
-                }
-            ],
-            temperature: 1,
-            max_completion_tokens: 1200 // Reduced for faster brand extraction
-        });
+    const maxRetries = 3;
+    let lastError;
 
-        const response = completion.choices[0] ?.message ?.content ?.trim();
-        if (!response) return null;
-        const clean = sanitizeToJsonString(response);
-
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            return JSON.parse(clean);
-        } catch (parseError) {
-            console.warn("Brand extraction JSON parsing failed, trying partial extraction...");
-            // For brand extraction, try to extract any valid brand objects
-            try {
-                const partialBrands = extractPartialBrandData(clean);
-                if (partialBrands && Object.keys(partialBrands).length > 0) {
-                    return partialBrands;
+            console.log(`Calling OpenAI API for brand extraction... (attempt ${attempt}/${maxRetries})`);
+
+            const completion = await openai.chat.completions.create({
+                model: "gpt-4o-mini",
+                messages: [{
+                        role: "system",
+                        content: brandOfferSchema
+                    },
+                    {
+                        role: "user",
+                        content: `Build the brand-keyed offers JSON from this content. Respond with ONLY JSON.\n\n${content}`
+                    }
+                ],
+                temperature: 0.3,
+                max_tokens: 1000
+            });
+
+            const response = completion.choices[0]?.message?.content?.trim();
+            if (!response) {
+                console.warn(`OpenAI returned empty response for brand extraction on attempt ${attempt}`);
+                if (attempt < maxRetries) {
+                    await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+                    continue;
                 }
-            } catch (partialError) {
-                console.warn("Partial brand extraction failed:", partialError.message);
+                return null;
             }
-            return null;
+
+            const clean = sanitizeToJsonString(response);
+
+            try {
+                return JSON.parse(clean);
+            } catch (parseError) {
+                console.warn("Brand extraction JSON parsing failed, trying partial extraction...");
+                // For brand extraction, try to extract any valid brand objects
+                try {
+                    const partialBrands = extractPartialBrandData(clean);
+                    if (partialBrands && Object.keys(partialBrands).length > 0) {
+                        return partialBrands;
+                    }
+                } catch (partialError) {
+                    console.warn("Partial brand extraction failed:", partialError.message);
+                }
+                return null;
+            }
+
+        } catch (e) {
+            lastError = e;
+            console.warn(`Brand-offer chunk extraction failed on attempt ${attempt}:`, e.message);
+
+            if (attempt < maxRetries) {
+                console.log(`Retrying brand extraction in ${1000 * attempt}ms...`);
+                await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+            }
         }
-    } catch (e) {
-        console.warn(" Brand-offer chunk extraction failed:", e.message);
-        return null;
     }
+
+    console.error(`Failed to process brand chunk after ${maxRetries} attempts:`,lastError?.message);
+    return null;
 }
 
 function mergeBrandMaps(maps) {
@@ -588,9 +626,9 @@ function mergeBrandMaps(maps) {
         if (!m || typeof m !== 'object') continue;
         for (const [brandKey, val] of Object.entries(m)) {
             const brand = String(brandKey).trim();
-            const validity = String(val ?. ["validity"] || "").trim();
-            const desc = String(val ?. ["offer description"] || "").trim();
-            const terms = String(val ?. ["t&c"] || "").trim();
+            const validity = String(val ?.["validity"] || "").trim();
+            const desc = String(val ?.["offer description"] || "").trim();
+            const terms = String(val ?.["t&c"] || "").trim();
 
             if (!merged[brand]) {
                 merged[brand] = {
@@ -611,8 +649,8 @@ function mergeBrandMaps(maps) {
 
 export async function extractBrandOffers(rawText) {
     try {
-        const chunks = splitContent(rawText, 1500); // Smaller chunks for brand extraction
-        const chunksToProcess = chunks.slice(0, 2); // Reduced to 2 chunks for speed
+        const chunks = splitContent(rawText, 400); // Small chunks for brand extraction
+        const chunksToProcess = chunks.slice(0, 3); // Reduced to 3 chunks
 
         // Process chunks sequentially with early termination
         const maps = [];

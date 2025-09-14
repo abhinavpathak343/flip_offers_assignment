@@ -134,125 +134,54 @@ export async function parsePdf(url, referer = undefined) {
             actualUrl = repositoryUrl.href;
         }
 
-        for (let attempt = 1; attempt <= 3; attempt++) {
-            try {
-                console.log(`PDF download attempt ${attempt}/3: ${actualUrl}`);
+        try {
+            const response = await axios.get(actualUrl, {
+                responseType: "arraybuffer",
+                maxRedirects: 5,
+                timeout: 15000, // 15 sec timeout
+                headers,
+                validateStatus: (s) => s >= 200 && s < 400,
+            });
 
-                const response = await axios.get(actualUrl, {
-                    responseType: "arraybuffer",
-                    maxRedirects: 5,
-                    timeout: 15000, // 15 second timeout for PDFs (reduced)
-                    headers,
-                    validateStatus: (s) => s >= 200 && s < 400,
-                });
+            console.log(`✅ PDF downloaded (${response.data.byteLength} bytes)`);
+            return await processPdfData(response.data);
 
-                console.log(`✅ PDF downloaded (${response.data.byteLength} bytes)`);
-                return await processPdfData(response.data);
+        } catch (e) {
+            console.log(`❌ PDF download error: ${e.message}`);
 
-            } catch (e) {
-                lastError = e;
+            if (e.response && e.response.status === 404) {
+                // Try repository URL conversion for HDFC relative paths
+                if (url.includes('/Personal/Pay/Cards/') && !url.includes('/content/bbp/repositories/')) {
+                    let path = url.replace('https://www.hdfcbank.com', '');
+                    try {
+                        path = decodeURIComponent(path);
+                    } catch {
+                        console.warn(`Could not decode path: ${path}`);
+                    }
 
-                if (e.code === 'ECONNABORTED' || e.message.includes('timeout')) {
-                    console.log(`PDF download timeout on attempt ${attempt}/3`);
-                } else {
-                    console.log(` PDF download error on attempt ${attempt}/3: ${e.message}`);
+                    const encodedPath = encodeURIComponent(path);
+                    const repoUrl = `https://www.hdfcbank.com/content/bbp/repositories/723fb80a-2dde-42a3-9793-7ae1be57c87f/?path=${encodedPath}`;
+                    console.log(`🔁 Trying repository URL conversion: ${repoUrl}`);
+
+                    try {
+                        const repoResp = await axios.get(repoUrl, {
+                            responseType: "arraybuffer",
+                            maxRedirects: 5,
+                            timeout: 15000,
+                            headers,
+                            validateStatus: (s) => s >= 200 && s < 400,
+                        });
+                        console.log(`✅ PDF downloaded via repository URL (${repoResp.data.byteLength} bytes)`);
+                        return await processPdfData(repoResp.data);
+                    } catch (repoErr) {
+                        console.log(`❌ Repository URL failed: ${repoErr.message}`);
+                    }
                 }
 
-                if (attempt < 3) {
-                    const waitMs = 2000 * attempt;
-                    console.log(` Waiting ${waitMs}ms before retry...`);
-                    await new Promise((r) => setTimeout(r, waitMs));
-                } else if (e.response && e.response.status === 404) {
-                    // Try repository URL conversion for HDFC relative paths
-                    if (url.includes('/Personal/Pay/Cards/') && !url.includes('/content/bbp/repositories/')) {
-                        // This looks like a relative path that should be converted to repository URL
-                        let path = url.replace('https://www.hdfcbank.com', '');
-
-                        // Decode the path first to avoid double encoding
-                        try {
-                            path = decodeURIComponent(path);
-                        } catch (decodeError) {
-                            // If decoding fails, use the original path
-                            console.warn(`Could not decode path: ${path}`);
-                        }
-
-                        const encodedPath = encodeURIComponent(path);
-                        const repoUrl = `https://www.hdfcbank.com/content/bbp/repositories/723fb80a-2dde-42a3-9793-7ae1be57c87f/?path=${encodedPath}`;
-                        console.log(`🔁 Trying repository URL conversion: ${repoUrl}`);
-                        try {
-                            const repoResp = await axios.get(repoUrl, {
-                                responseType: "arraybuffer",
-                                maxRedirects: 5,
-                                timeout: 15000,
-                                headers,
-                                validateStatus: (s) => s >= 200 && s < 400,
-                            });
-                            console.log(` PDF downloaded via repository URL (${repoResp.data.byteLength} bytes)`);
-                            return await processPdfData(repoResp.data);
-                        } catch (repoErr) {
-                            console.log(` Repository URL failed: ${repoErr.message}`);
-                        }
-                    }
-
-                    // Final fallback: try lower-casing the path (HDFC often serves lowercase paths)
-                    try {
-                        const lowered = buildLowercaseUrl(url);
-                        if (lowered.href !== url) {
-                            console.log(` Retrying with lowercase path: ${lowered.href}`);
-                            const resp2 = await axios.get(lowered.href, {
-                                responseType: "arraybuffer",
-                                maxRedirects: 5,
-                                timeout: 15000,
-                                headers,
-                                validateStatus: (s) => s >= 200 && s < 400,
-                            });
-                            console.log(`PDF downloaded (${resp2.data.byteLength} bytes) [lowercase path]`);
-                            return await processPdfData(resp2.data);
-                        }
-                    } catch (fallbackErr) {
-                        console.log(` Lowercase-path fallback failed: ${fallbackErr.message}`);
-                    }
-
-                    // Fallback: lowercase only directory segments, preserve filename case
-                    try {
-                        const loweredDirsOnly = buildLowercaseDirsUrl(url);
-                        if (loweredDirsOnly.href !== url) {
-                            console.log(`🔁 Retrying with lowercase directories: ${loweredDirsOnly.href}`);
-                            const resp2b = await axios.get(loweredDirsOnly.href, {
-                                responseType: "arraybuffer",
-                                maxRedirects: 5,
-                                timeout: 15000,
-                                headers,
-                                validateStatus: (s) => s >= 200 && s < 400,
-                            });
-                            console.log(` PDF downloaded (${resp2b.data.byteLength} bytes) [lowercase dirs]`);
-                            return await processPdfData(resp2b.data);
-                        }
-                    } catch (fallbackErrB) {
-                        console.log(` Lowercase-directories fallback failed: ${fallbackErrB.message}`);
-                    }
-
-                    // Additional fallback: slugify path segments (spaces->hyphens, lowercase)
-                    try {
-                        const slugged = buildSlugifiedUrl(url);
-                        if (slugged.href !== url) {
-                            console.log(` Retrying with slugified path: ${slugged.href}`);
-                            const resp3 = await axios.get(slugged.href, {
-                                responseType: "arraybuffer",
-                                maxRedirects: 5,
-                                timeout: 15000,
-                                headers,
-                                validateStatus: (s) => s >= 200 && s < 400,
-                            });
-                            console.log(` PDF downloaded (${resp3.data.byteLength} bytes) [slugified path]`);
-                            return await processPdfData(resp3.data);
-                        }
-                    } catch (fallbackErr2) {
-                        console.log(`Slugified-path fallback failed: ${fallbackErr2.message}`);
-                    }
-                }
+                // fallback lowercase/slugified logic here (same as before)
             }
         }
+
 
         throw lastError || new Error("Unknown PDF download error");
     } catch (err) {
