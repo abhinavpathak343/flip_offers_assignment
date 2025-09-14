@@ -5,7 +5,7 @@ import {
 
 
 // Function to split large content into manageable chunks
-function splitContent(text, maxTokens = 4000) { // Much smaller chunks to avoid token limits
+function splitContent(text, maxTokens = 2000) { // Smaller chunks for faster processing
     const words = text.split(' ');
     const chunks = [];
     let currentChunk = '';
@@ -31,24 +31,153 @@ function splitContent(text, maxTokens = 4000) { // Much smaller chunks to avoid 
 
 function sanitizeToJsonString(input) {
     let s = String(input || "");
+
     // Normalize smart quotes to straight quotes
-    s = s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+    s = s.replace(/[""]/g, '"').replace(/['']/g, "'");
+
     // Strip line and block comments
     s = s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+
     // Remove markdown fences if any
     s = s.replace(/```json\s*([\s\S]*?)\s*```/gi, '$1').replace(/```\s*([\s\S]*?)\s*```/g, '$1');
+
     // Trim extraneous text outside the outermost JSON braces
     const jsonMatch = s.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
     if (jsonMatch) s = jsonMatch[0];
+
+    // Handle truncated JSON by finding the last complete object/array
+    if (s.includes('...') || s.endsWith(',')) {
+        // Find the last complete closing brace or bracket
+        let lastCompleteIndex = -1;
+        let braceCount = 0;
+        let bracketCount = 0;
+        let inString = false;
+        let escapeNext = false;
+
+        for (let i = 0; i < s.length; i++) {
+            const char = s[i];
+
+            if (escapeNext) {
+                escapeNext = false;
+                continue;
+            }
+
+            if (char === '\\') {
+                escapeNext = true;
+                continue;
+            }
+
+            if (char === '"' && !escapeNext) {
+                inString = !inString;
+                continue;
+            }
+
+            if (!inString) {
+                if (char === '{') braceCount++;
+                else if (char === '}') braceCount--;
+                else if (char === '[') bracketCount++;
+                else if (char === ']') bracketCount--;
+
+                // If we're back to 0, we have a complete structure
+                if (braceCount === 0 && bracketCount === 0) {
+                    lastCompleteIndex = i;
+                }
+            }
+        }
+
+        if (lastCompleteIndex > 0) {
+            s = s.substring(0, lastCompleteIndex + 1);
+        }
+    }
+
     // Ensure property names are quoted
     s = s.replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_\-]*)\s*:/g, '$1"$2":');
+
     // Convert single-quoted strings to double-quoted strings safely
     s = s.replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, '"$1"');
+
     // Remove trailing commas before } or ]
     s = s.replace(/,\s*(?=[}\]])/g, '');
+
+    // Fix common JSON issues
+    s = s.replace(/,\s*,/g, ','); // Remove double commas
+    s = s.replace(/:\s*,/g, ': null,'); // Add null for missing values
+    s = s.replace(/,\s*}/g, '}'); // Remove trailing commas before closing braces
+    s = s.replace(/,\s*]/g, ']'); // Remove trailing commas before closing brackets
+
     // Collapse illegal control whitespace
     s = s.replace(/\u0000|\u0001|\u0002|\u0003|\u0004|\u0005|\u0006|\u0007|\u0008|\u000B|\u000C|\u000E|\u000F/g, '');
+
     return s.trim();
+}
+
+// Extract partial data from malformed JSON
+function extractPartialJsonData(malformedJson) {
+    try {
+        const result = {};
+
+        // Extract basic card information using regex
+        const cardNameMatch = malformedJson.match(/"card_name"\s*:\s*"([^"]+)"/);
+        if (cardNameMatch) result.card_name = cardNameMatch[1];
+
+        const issuerMatch = malformedJson.match(/"issuer"\s*:\s*"([^"]+)"/);
+        if (issuerMatch) result.issuer = issuerMatch[1];
+
+        const cardCategoryMatch = malformedJson.match(/"card_category"\s*:\s*"([^"]+)"/);
+        if (cardCategoryMatch) result.card_category = cardCategoryMatch[1];
+
+        const cardTypeMatch = malformedJson.match(/"card_type"\s*:\s*"([^"]+)"/);
+        if (cardTypeMatch) result.card_type = cardTypeMatch[1];
+
+        // Extract fees and charges
+        const feesMatch = malformedJson.match(/"fees_and_charges"\s*:\s*\{([^}]+)\}/);
+        if (feesMatch) {
+            result.fees_and_charges = {};
+            const feesContent = feesMatch[1];
+
+            const annualFeeMatch = feesContent.match(/"annual_fee"\s*:\s*"([^"]+)"/);
+            if (annualFeeMatch) result.fees_and_charges.annual_fee = annualFeeMatch[1];
+
+            const renewalFeeMatch = feesContent.match(/"renewal_fee"\s*:\s*"([^"]+)"/);
+            if (renewalFeeMatch) result.fees_and_charges.renewal_fee = renewalFeeMatch[1];
+
+            const foreignMarkupMatch = feesContent.match(/"foreign_markup"\s*:\s*"([^"]+)"/);
+            if (foreignMarkupMatch) result.fees_and_charges.foreign_markup = foreignMarkupMatch[1];
+        }
+
+        // Extract offers array
+        const offersMatch = malformedJson.match(/"offers"\s*:\s*\[([^\]]+)\]/);
+        if (offersMatch) {
+            result.offers = [];
+            // Try to extract individual offer objects
+            const offersContent = offersMatch[1];
+            const offerMatches = offersContent.match(/\{[^}]*"title"[^}]*\}/g);
+            if (offerMatches) {
+                offerMatches.forEach(offerStr => {
+                    try {
+                        const offer = JSON.parse(offerStr);
+                        result.offers.push(offer);
+                    } catch (e) {
+                        // Skip malformed individual offers
+                    }
+                });
+            }
+        }
+
+        // Set default values for missing fields
+        if (!result.offers) result.offers = [];
+        if (!result.fees_and_charges) result.fees_and_charges = {};
+        if (!result.eligibility_criteria) result.eligibility_criteria = {};
+        if (!result.credit_details) result.credit_details = {};
+        if (!result.rewards_program) result.rewards_program = {};
+        if (!result.travel_benefits) result.travel_benefits = {};
+        if (!result.terms_and_conditions) result.terms_and_conditions = {};
+
+        return result;
+    } catch (error) {
+        console.warn("Partial JSON extraction failed:", error.message);
+        return null;
+    }
 }
 
 async function processSingleChunk(content) {
@@ -56,7 +185,7 @@ async function processSingleChunk(content) {
         console.log("Calling OpenAI API...");
 
         const completion = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo",
+            model: "gpt-5",
             messages: [{
                     role: "system",
                     content: cardSchema
@@ -66,8 +195,8 @@ async function processSingleChunk(content) {
                     content: `Extract credit card details from this content:\n\n${content}`
                 }
             ],
-            temperature: 0,
-            max_tokens: 2500 // Reduced to leave more room for context
+            temperature: 1,
+            max_completion_tokens: 1500 // Reduced for faster response
         });
 
 
@@ -85,15 +214,28 @@ async function processSingleChunk(content) {
         try {
             return JSON.parse(cleanResponse);
         } catch (parseError) {
-            console.warn(" JSON parsing failed, applying sanitization...");
+            console.warn(" JSON parsing failed, applying enhanced sanitization...");
             let fixedResponse = sanitizeToJsonString(cleanResponse);
 
             try {
                 return JSON.parse(fixedResponse);
             } catch (fixError) {
-                console.error("Could not parse JSON even after cleanup attempts");
-                console.log("Original response:", response.substring(0, 500) + "...");
-                throw parseError;
+                console.warn("Enhanced sanitization failed, trying partial extraction...");
+
+                // Try to extract partial data from malformed JSON
+                try {
+                    const partialData = extractPartialJsonData(cleanResponse);
+                    if (partialData && Object.keys(partialData).length > 0) {
+                        console.log("Successfully extracted partial data from malformed JSON");
+                        return partialData;
+                    }
+                } catch (partialError) {
+                    console.warn("Partial extraction also failed:", partialError.message);
+                }
+
+                console.error("Could not parse JSON even after all cleanup attempts");
+                console.log("Original response (first 500 chars):", response.substring(0, 500) + "...");
+                return null; // Return null instead of throwing to allow processing to continue
             }
         }
 
@@ -127,8 +269,8 @@ async function processSingleChunk(content) {
 
 
 async function processMultipleChunks(chunks) {
-    // Limit to first 3 chunks as requested to avoid excessive API usage
-    const chunksToProcess = chunks.slice(0, 3);
+    // Limit to first 2 chunks for faster processing
+    const chunksToProcess = chunks.slice(0, 2);
     console.log(` Processing first ${chunksToProcess.length} chunks out of ${chunks.length} total`);
 
     // Run OpenAI calls in parallel to reduce overall latency
@@ -295,7 +437,7 @@ export async function extractCardDetails(rawText) {
         console.log(` Processing content of ${rawText.length} characters`);
 
         // Check if content is too large for single API call
-        const chunks = splitContent(rawText, 4000); // Use smaller chunks
+        const chunks = splitContent(rawText, 2000); // Use smaller chunks
 
         if (chunks.length > 1) {
             console.log(` Splitting content into ${chunks.length} chunks`);
@@ -310,7 +452,7 @@ export async function extractCardDetails(rawText) {
         // If it's a token limit error, try splitting the content
         if (err.message.includes('maximum context length') || err.message.includes('tokens')) {
             console.log(" Retrying with smaller chunks due to token limit...");
-            const smallerChunks = splitContent(rawText, 2500); // Very small chunks for retry
+            const smallerChunks = splitContent(rawText, 1500); // Very small chunks for retry
             return await processMultipleChunks(smallerChunks);
         }
 
@@ -319,27 +461,89 @@ export async function extractCardDetails(rawText) {
 }
 
 // Brand-keyed offer extraction
-const brandOfferSchema = `You convert long, messy bank page text into a concise brand-keyed JSON.
-Return ONLY valid JSON with this exact structure, no markdown, no commentary:
+const brandOfferSchema = `You extract specific merchant/brand offers from credit card content and return ONLY valid JSON.
+
+CRITICAL: Create separate entries for EACH specific brand/merchant mentioned. Do NOT group everything under "HDFC Bank".
+
+Return ONLY valid JSON with this exact structure:
 {
-  "Brand Name": {
-    "validity": "date or period",
-    "offer description": "clear, concise summary including caps, rates, eligibility",
-    "t&c": "key terms and conditions in one line"
+  "Swiggy": {
+    "validity": "validity period",
+    "offer description": "specific Swiggy offer details",
+    "t&c": "Swiggy-specific terms"
+  },
+  "BookMyShow": {
+    "validity": "validity period", 
+    "offer description": "specific BookMyShow offer details",
+    "t&c": "BookMyShow-specific terms"
+  },
+  "Adidas": {
+    "validity": "validity period",
+    "offer description": "specific Adidas offer details", 
+    "t&c": "Adidas-specific terms"
   }
 }
 
-Rules:
-- Normalize brand keys (e.g., "Swiggy", "Adidas", "Fortis Healthcare").
-- If multiple offers for the same brand exist, merge into one entry; concatenate fields using " | ".
-- Prefer concrete info from official terms and PDFs; include spending caps, usage limits, channels (SmartBuy, app, in-store), excluded items, and booking codes when available.
-- If a field is unknown, return an empty string.
+RULES:
+- Extract ONLY specific merchant/brand offers (Swiggy, Zomato, BookMyShow, Adidas, Fortis, Marriott, Decathlon, etc.)
+- Create separate JSON entries for each brand
+- Do NOT create generic entries like "HDFC Bank" or "Diners Club" 
+- Focus on merchant-specific offers, discounts, cashback, rewards
+- If no specific brand offers found, return empty object {}
+- Include spending requirements, discount percentages, validity periods
+- Extract terms specific to each merchant
 `;
+
+// Extract partial brand data from malformed JSON
+function extractPartialBrandData(malformedJson) {
+    try {
+        const result = {};
+
+        // Look for brand objects in the malformed JSON
+        const brandMatches = malformedJson.match(/"([^"]+)"\s*:\s*\{[^}]*"validity"[^}]*\}/g);
+        if (brandMatches) {
+            brandMatches.forEach(brandStr => {
+                try {
+                    // Extract brand name
+                    const brandNameMatch = brandStr.match(/"([^"]+)"\s*:\s*\{/);
+                    if (brandNameMatch) {
+                        const brandName = brandNameMatch[1];
+
+                        // Extract validity
+                        const validityMatch = brandStr.match(/"validity"\s*:\s*"([^"]+)"/);
+                        const validity = validityMatch ? validityMatch[1] : "";
+
+                        // Extract offer description
+                        const descMatch = brandStr.match(/"offer description"\s*:\s*"([^"]+)"/);
+                        const description = descMatch ? descMatch[1] : "";
+
+                        // Extract terms
+                        const termsMatch = brandStr.match(/"t&c"\s*:\s*"([^"]+)"/);
+                        const terms = termsMatch ? termsMatch[1] : "";
+
+                        result[brandName] = {
+                            "validity": validity,
+                            "offer description": description,
+                            "t&c": terms
+                        };
+                    }
+                } catch (e) {
+                    // Skip malformed brand entries
+                }
+            });
+        }
+
+        return result;
+    } catch (error) {
+        console.warn("Partial brand extraction failed:", error.message);
+        return null;
+    }
+}
 
 async function processSingleBrandChunk(content) {
     try {
         const completion = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo",
+            model: "gpt-5",
             messages: [{
                     role: "system",
                     content: brandOfferSchema
@@ -349,14 +553,29 @@ async function processSingleBrandChunk(content) {
                     content: `Build the brand-keyed offers JSON from this content. Respond with ONLY JSON.\n\n${content}`
                 }
             ],
-            temperature: 0,
-            max_tokens: 2000
+            temperature: 1,
+            max_completion_tokens: 1200 // Reduced for faster brand extraction
         });
 
-        const response = completion.choices[0]?.message?.content?.trim();
+        const response = completion.choices[0] ?.message ?.content ?.trim();
         if (!response) return null;
         const clean = sanitizeToJsonString(response);
-        return JSON.parse(clean);
+
+        try {
+            return JSON.parse(clean);
+        } catch (parseError) {
+            console.warn("Brand extraction JSON parsing failed, trying partial extraction...");
+            // For brand extraction, try to extract any valid brand objects
+            try {
+                const partialBrands = extractPartialBrandData(clean);
+                if (partialBrands && Object.keys(partialBrands).length > 0) {
+                    return partialBrands;
+                }
+            } catch (partialError) {
+                console.warn("Partial brand extraction failed:", partialError.message);
+            }
+            return null;
+        }
     } catch (e) {
         console.warn(" Brand-offer chunk extraction failed:", e.message);
         return null;
@@ -369,9 +588,9 @@ function mergeBrandMaps(maps) {
         if (!m || typeof m !== 'object') continue;
         for (const [brandKey, val] of Object.entries(m)) {
             const brand = String(brandKey).trim();
-            const validity = String(val ?.["validity"] || "").trim();
-            const desc = String(val ?.["offer description"] || "").trim();
-            const terms = String(val ?.["t&c"] || "").trim();
+            const validity = String(val ?. ["validity"] || "").trim();
+            const desc = String(val ?. ["offer description"] || "").trim();
+            const terms = String(val ?. ["t&c"] || "").trim();
 
             if (!merged[brand]) {
                 merged[brand] = {
@@ -392,14 +611,26 @@ function mergeBrandMaps(maps) {
 
 export async function extractBrandOffers(rawText) {
     try {
-        const chunks = splitContent(rawText, 3000);
-        const chunksToProcess = chunks.slice(0, 3);
-        const settled = await Promise.allSettled(
-            chunksToProcess.map((c) => processSingleBrandChunk(c))
-        );
-        const maps = settled
-            .filter(r => r.status === 'fulfilled' && r.value)
-            .map(r => r.value);
+        const chunks = splitContent(rawText, 1500); // Smaller chunks for brand extraction
+        const chunksToProcess = chunks.slice(0, 2); // Reduced to 2 chunks for speed
+
+        // Process chunks sequentially with early termination
+        const maps = [];
+        for (let i = 0; i < chunksToProcess.length; i++) {
+            console.log(`Processing brand chunk ${i + 1}/${chunksToProcess.length}`);
+            const result = await processSingleBrandChunk(chunksToProcess[i]);
+            if (result) {
+                maps.push(result);
+
+                // Early termination: if we have 5+ brands, we likely have enough
+                const merged = mergeBrandMaps(maps);
+                if (Object.keys(merged).length >= 5) {
+                    console.log(`Early termination: Found ${Object.keys(merged).length} brands`);
+                    return merged;
+                }
+            }
+        }
+
         if (maps.length === 0) return null;
         return mergeBrandMaps(maps);
     } catch (e) {

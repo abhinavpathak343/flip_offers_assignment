@@ -229,6 +229,7 @@ export async function crawlPage(url) {
 export async function crawlWithinScope(startUrl, maxDepth = 2, options = {}) {
     const pageLimit = options.pageLimit || 20;
     const pdfLimit = options.pdfLimit || 20;
+    const crawlConcurrency = options.crawlConcurrency || 3; // Parallel crawling
     const pathMustContain = (options.pathMustContain || new URL(startUrl).pathname)
         .toLowerCase();
 
@@ -247,59 +248,103 @@ export async function crawlWithinScope(startUrl, maxDepth = 2, options = {}) {
 
     console.log(`Starting crawl from: ${normalizedStart}`);
     console.log(`Scope: path contains "${pathMustContain}"`);
+    console.log(`Crawl concurrency: ${crawlConcurrency}`);
+
+    // Parallel crawling implementation
+    async function processCrawlBatch(batch) {
+        const results = await Promise.allSettled(
+            batch.map(async ({
+                url,
+                depth
+            }) => {
+                if (visitedPages.has(url) || depth > maxDepth) return null;
+
+                const urlPath = new URL(url).pathname.toLowerCase();
+                if (pathMustContain && !urlPath.includes(pathMustContain)) return null;
+
+                visitedPages.add(url);
+
+                const {
+                    text,
+                    links
+                } = await crawlPage(url);
+                return {
+                    url,
+                    text,
+                    links,
+                    depth
+                };
+            })
+        );
+
+        return results
+            .filter(r => r.status === 'fulfilled' && r.value)
+            .map(r => r.value);
+    }
 
     while (queue.length && visitedPages.size < pageLimit) {
-        const {
-            url,
-            depth
-        } = queue.shift();
-        if (visitedPages.has(url) || depth > maxDepth) continue;
-
-        const urlPath = new URL(url).pathname.toLowerCase();
-        if (pathMustContain && !urlPath.includes(pathMustContain)) continue;
-
-        visitedPages.add(url);
-
-        const {
-            text,
-            links
-        } = await crawlPage(url);
-        if (text.trim().length > 50) { // Only add substantial content
-            aggregatedText += `\n\n[PAGE:${url}]\n` + text;
-        }
-
-        for (const link of links) {
-            if (!isSameOrigin(link.url, root.href)) continue;
-
-            if (link.type === "pdf") {
-                if (visitedPdfs.size >= pdfLimit) continue;
-                const pdfKey = normalizeUrl(link.url, root.href, {
-                    keepQueryForPdf: true
-                });
-                if (!pdfKey || visitedPdfs.has(pdfKey)) continue;
-                visitedPdfs.add(pdfKey);
-                discoveredLinks.push({
-                    ...link,
-                    url: pdfKey,
-                    referer: url
-                });
-            } else if (link.type === "page") {
-                const pageKey = normalizeUrl(link.url, root.href, {
-                    keepQueryForPdf: false
-                });
-                if (!pageKey || visitedPages.has(pageKey)) continue;
-                const pagePath = new URL(pageKey).pathname.toLowerCase();
-                if (pathMustContain && !pagePath.includes(pathMustContain)) continue;
-                if (visitedPages.size + queue.length >= pageLimit) continue;
-                queue.push({
-                    url: pageKey,
-                    depth: depth + 1
-                });
+        // Process pages in batches for parallel crawling
+        const batch = [];
+        while (batch.length < crawlConcurrency && queue.length && visitedPages.size + batch.length < pageLimit) {
+            const item = queue.shift();
+            if (!visitedPages.has(item.url) && item.depth <= maxDepth) {
+                batch.push(item);
             }
         }
 
-        // Add delay between requests to be respectful
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        if (batch.length === 0) break;
+
+        const batchResults = await processCrawlBatch(batch);
+
+        for (const result of batchResults) {
+            if (!result) continue;
+
+            const {
+                url,
+                text,
+                links,
+                depth
+            } = result;
+
+            if (text.trim().length > 50) { // Only add substantial content
+                aggregatedText += `\n\n[PAGE:${url}]\n` + text;
+            }
+
+            for (const link of links) {
+                if (!isSameOrigin(link.url, root.href)) continue;
+
+                if (link.type === "pdf") {
+                    if (visitedPdfs.size >= pdfLimit) continue;
+                    const pdfKey = normalizeUrl(link.url, root.href, {
+                        keepQueryForPdf: true
+                    });
+                    if (!pdfKey || visitedPdfs.has(pdfKey)) continue;
+                    visitedPdfs.add(pdfKey);
+                    discoveredLinks.push({
+                        ...link,
+                        url: pdfKey,
+                        referer: url
+                    });
+                } else if (link.type === "page") {
+                    const pageKey = normalizeUrl(link.url, root.href, {
+                        keepQueryForPdf: false
+                    });
+                    if (!pageKey || visitedPages.has(pageKey)) continue;
+                    const pagePath = new URL(pageKey).pathname.toLowerCase();
+                    if (pathMustContain && !pagePath.includes(pathMustContain)) continue;
+                    if (visitedPages.size + queue.length >= pageLimit) continue;
+                    queue.push({
+                        url: pageKey,
+                        depth: depth + 1
+                    });
+                }
+            }
+        }
+
+        // Reduced delay between batches for better performance
+        if (queue.length > 0) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
     }
 
     console.log(`Crawl summary: pages=${visitedPages.size}, pdfs=${discoveredLinks.length}`);

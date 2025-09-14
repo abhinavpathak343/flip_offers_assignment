@@ -15,8 +15,8 @@ async function processPdfData(dataBuffer) {
     console.log(`✅ PDF pages: ${pdfDoc.numPages}`);
     let textContent = "";
 
-    // Limit to first 20 pages to avoid excessive processing
-    const maxPages = Math.min(pdfDoc.numPages, 20);
+    // Limit to first 10 pages to avoid excessive processing
+    const maxPages = Math.min(pdfDoc.numPages, 10);
 
     for (let i = 1; i <= maxPages; i++) {
         try {
@@ -141,7 +141,7 @@ export async function parsePdf(url, referer = undefined) {
                 const response = await axios.get(actualUrl, {
                     responseType: "arraybuffer",
                     maxRedirects: 5,
-                    timeout: 30000, // 30 second timeout for PDFs
+                    timeout: 15000, // 15 second timeout for PDFs (reduced)
                     headers,
                     validateStatus: (s) => s >= 200 && s < 400,
                 });
@@ -183,7 +183,7 @@ export async function parsePdf(url, referer = undefined) {
                             const repoResp = await axios.get(repoUrl, {
                                 responseType: "arraybuffer",
                                 maxRedirects: 5,
-                                timeout: 30000,
+                                timeout: 15000,
                                 headers,
                                 validateStatus: (s) => s >= 200 && s < 400,
                             });
@@ -202,7 +202,7 @@ export async function parsePdf(url, referer = undefined) {
                             const resp2 = await axios.get(lowered.href, {
                                 responseType: "arraybuffer",
                                 maxRedirects: 5,
-                                timeout: 30000,
+                                timeout: 15000,
                                 headers,
                                 validateStatus: (s) => s >= 200 && s < 400,
                             });
@@ -221,7 +221,7 @@ export async function parsePdf(url, referer = undefined) {
                             const resp2b = await axios.get(loweredDirsOnly.href, {
                                 responseType: "arraybuffer",
                                 maxRedirects: 5,
-                                timeout: 30000,
+                                timeout: 15000,
                                 headers,
                                 validateStatus: (s) => s >= 200 && s < 400,
                             });
@@ -240,7 +240,7 @@ export async function parsePdf(url, referer = undefined) {
                             const resp3 = await axios.get(slugged.href, {
                                 responseType: "arraybuffer",
                                 maxRedirects: 5,
-                                timeout: 30000,
+                                timeout: 15000,
                                 headers,
                                 validateStatus: (s) => s >= 200 && s < 400,
                             });
