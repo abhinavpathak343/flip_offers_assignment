@@ -185,7 +185,7 @@ export async function parsePdfInWorker(url, referer = undefined) {
             reject(error);
         }
     });
-}
+}   
 
 // Process multiple PDFs in parallel using workers
 export async function parseMultiplePdfsInWorkers(pdfLinks, concurrency = 3) {

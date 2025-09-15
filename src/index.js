@@ -4,9 +4,7 @@ import path from "path";
 import {
     crawlWithinScope
 } from "./crawler/crawler.js";
-import {
-    parsePdf
-} from "./crawler/pdfparse.js";
+
 import {
     parsePdfInWorker,
     parseMultiplePdfsInWorkers
@@ -237,7 +235,7 @@ async function run() {
         }
 
         // Process card-wise offers
-        const offers = Array.isArray(extracted?.offers)?extracted.offers : [];
+        const offers = Array.isArray(extracted ?.offers) ? extracted.offers : [];
         const cardToOffers = {};
         const cardNameSafe = String(extracted.card_name || "hdfc_diners_club_privilege").replace(/[^a-z0-9]+/gi, "_").toLowerCase();
 
