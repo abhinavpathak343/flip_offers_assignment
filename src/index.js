@@ -8,6 +8,10 @@ import {
     parsePdf
 } from "./crawler/pdfparse.js";
 import {
+    parsePdfInWorker,
+    parseMultiplePdfsInWorkers
+} from "./crawler/pdfWorkerManager.js";
+import {
     extractCardDetails,
     extractBrandOffers
 } from "./extractor/Extractor.js";
@@ -132,7 +136,7 @@ async function run() {
 
         let allText = text;
 
-        // Process PDFs with optimized concurrency
+        // Process PDFs with worker threads
         const seenPdf = new Set();
         const pdfLinks = [];
         for (const link of links) {
@@ -142,58 +146,29 @@ async function run() {
             pdfLinks.push(link);
         }
 
-        // Optimized concurrency control
-        async function runWithConcurrency(items, limit, worker) {
-            const results = new Array(items.length);
-            const semaphore = new Array(limit).fill(null);
-            let currentIndex = 0;
+        if (pdfLinks.length) {
+            console.log(`\nProcessing ${pdfLinks.length} PDFs using worker threads...`);
 
-            async function processNext() {
-                const idx = currentIndex++;
-                if (idx >= items.length) return;
+            // Use worker-based parallel processing
+            const {
+                results: pdfResults,
+                successful,
+                failed
+            } = await parseMultiplePdfsInWorkers(pdfLinks, 3);
 
-                try {
-                    results[idx] = await worker(items[idx], idx);
-                } catch (e) {
-                    console.warn(`PDF processing failed for item ${idx}:`, e.message);
-                    results[idx] = null;
-                }
+            console.log(`\nPDF Processing Summary:`);
+            console.log(`✅ Successful: ${successful.length}`);
+            console.log(`❌ Failed: ${failed.length}`);
 
-                // Process next item
-                if (currentIndex < items.length) {
-                    return processNext();
-                }
+            if (failed.length > 0) {
+                console.log(`\nFailed PDFs:`);
+                failed.forEach(f => console.log(`  - ${f.url}: ${f.error}`));
             }
 
-            // Start initial batch
-            const initialBatch = Math.min(limit, items.length);
-            const promises = Array.from({
-                length: initialBatch
-            }, processNext);
-            await Promise.all(promises);
-
-            return results;
-        }
-
-        if (pdfLinks.length) {
-            console.log(`\nProcessing ${pdfLinks.length} PDFs with optimized concurrency...`);
-            const concurrency = 3; // Optimized for better resource usage
-            const pdfResults = await runWithConcurrency(pdfLinks, concurrency, async (link, idx) => {
-                console.log(`\nProcessing PDF ${idx + 1}/${pdfLinks.length}: ${link.url}`);
-                const pdfText = await parsePdf(link.url, link.referer);
-                if (pdfText && pdfText.trim()) {
-                    console.log(`✅ PDF parsed. Added ${pdfText.length} chars`);
-                    return pdfText;
-                } else {
-                    console.log("PDF returned no text");
-                    return null;
-                }
-            });
-
-            // Add PDF content to allText
-            pdfResults.forEach((pdfText, idx) => {
-                if (pdfText) {
-                    allText += "\n\n[PDF:" + pdfLinks[idx].url + "]\n" + pdfText;
+            // Add successful PDF content to allText
+            successful.forEach((result) => {
+                if (result.textContent && result.textContent.trim()) {
+                    allText += "\n\n[PDF:" + result.url + "]\n" + result.textContent;
                 }
             });
         }
@@ -262,7 +237,7 @@ async function run() {
         }
 
         // Process card-wise offers
-        const offers = Array.isArray(extracted ?.offers) ? extracted.offers : [];
+        const offers = Array.isArray(extracted?.offers)?extracted.offers : [];
         const cardToOffers = {};
         const cardNameSafe = String(extracted.card_name || "hdfc_diners_club_privilege").replace(/[^a-z0-9]+/gi, "_").toLowerCase();
 

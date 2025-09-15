@@ -77,7 +77,7 @@ function isRelevantLink(absoluteUrl, anchorText, rootPathHint) {
 }
 
 export async function crawlPage(url) {
-    const maxRetries = 3;
+    const maxRetries = 2;
     let lastError;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
