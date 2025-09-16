@@ -1,368 +1,299 @@
-// src/index.js
 import fs from "fs";
 import path from "path";
+import puppeteer from "puppeteer-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import pLimit from "p-limit";
+import slugify from "slugify";
 import {
-    crawlWithinScope
-} from "./crawler/crawler.js";
+    resolveEligibleCards
+} from "./extractor/sbiExtractor.js";
 
-import {
-    parsePdfInWorker,
-    parseMultiplePdfsInWorkers
-} from "./crawler/pdfWorkerManager.js";
-import {
-    extractCardDetails,
-    extractBrandOffers
-} from "./extractor/Extractor.js";
+puppeteer.use(StealthPlugin());
 
-// Allow URL from CLI: node src/index.js <url>
-const cliArgUrl = process.argv[2];
-let START_URL = "https://www.hdfcbank.com/personal/pay/cards/credit-cards/diners-privilege";
-if (cliArgUrl) {
-    try {
-        const candidate = new URL(cliArgUrl);
-        START_URL = candidate.href;
-    } catch {
-        console.warn("Invalid URL provided via CLI. Falling back to default START_URL.");
-    }
-} else {
-    console.log("You can provide a URL: node src/index.js <url>");
+const START_URL = "https://www.sbicard.com/en/personal/offers.page";
+const OUTPUT_DIR = path.join("data", "sbi-offers");
+const CONCURRENCY = Number(6);
+
+function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
 }
 
-// Aggressive content pre-trimming to extract only offer-relevant sections
-function preTrimContent(text) {
-    const highValueKeywords = [
-        // Specific brands/merchants
-        'swiggy', 'zomato', 'bookmyshow', 'adidas', 'fortis', 'marriott', 'decathlon',
-        'barbeque nation', 'o2 spa', 'lakme salon', 'times prime', 'amazon prime',
-        'mmt black', 'club marriott', 'smartbuy',
-        // Offer types
-        'cashback', 'discount', 'offers', 'rewards', 'points', 'miles',
-        'lounge access', 'travel insurance', 'welcome benefit', 'milestone',
-        'annual fee', 'joining fee', 'renewal fee', 'foreign markup',
-        'redemption', 'dining', 'entertainment', 'shopping', 'travel',
-        'buy 1 get 1', 'bogo', 'voucher', 'membership'
-    ];
+function jitter(min = 100, max = 300) {
+    return min + Math.floor(Math.random() * (max - min + 1));
+}
 
-    const lines = text.split('\n');
-    const relevantLines = [];
-    let inOfferSection = false;
-    let contextLines = 0;
-    let consecutiveEmptyLines = 0;
-
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        const lineLower = line.toLowerCase();
-
-        // Skip empty lines and navigation elements
-        if (line.length === 0) {
-            consecutiveEmptyLines++;
-            if (consecutiveEmptyLines > 2) continue; // Skip multiple empty lines
-        } else {
-            consecutiveEmptyLines = 0;
-        }
-
-        // Skip navigation, headers, footers
-        if (lineLower.includes('home') || lineLower.includes('menu') ||
-            lineLower.includes('login') || lineLower.includes('register') ||
-            lineLower.includes('contact us') || lineLower.includes('privacy') ||
-            lineLower.includes('disclaimer') || lineLower.includes('copyright') ||
-            lineLower.includes('sitemap') || lineLower.includes('careers')) {
-            inOfferSection = false;
-            continue;
-        }
-
-        const hasHighValueKeyword = highValueKeywords.some(keyword => lineLower.includes(keyword));
-
-        if (hasHighValueKeyword) {
-            inOfferSection = true;
-            contextLines = 2; // Reduced context for more aggressive filtering
-        }
-
-        if (inOfferSection || contextLines > 0) {
-            relevantLines.push(lines[i]);
-            if (contextLines > 0) contextLines--;
-        }
-
-        // Stop processing if we hit non-offer sections
-        if (lineLower.includes('terms and conditions') && !lineLower.includes('offer')) {
-            inOfferSection = false;
-        }
+function ensureDir(dir) {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, {
+            recursive: true
+        });
     }
+}
 
-    // Further filter: remove lines that are too short or contain only numbers/symbols
-    const filteredLines = relevantLines.filter(line => {
-        const trimmed = line.trim();
-        if (trimmed.length < 10) return false;
-        if (/^[\d\s\-\.\%₹\$]+$/.test(trimmed)) return false; // Only numbers/symbols
-        return true;
+function safeSlug(input) {
+    return slugify(String(input || ""), {
+        lower: true,
+        strict: true,
+        replacement: "-",
+        trim: true
+    }).replace(/-+/g, "-");
+}
+
+async function getInnerText(page, selectors) {
+    for (const sel of selectors) {
+        try {
+            const el = await page.$(sel);
+            if (el) {
+                const txt = await page.evaluate((e) => e.innerText, el);
+                if (txt && txt.trim().length > 0) return txt.trim();
+            }
+        } catch {}
+    }
+    return "";
+}
+
+async function extractDetail(page) {
+    await page.waitForSelector("body", {
+        timeout: 20000
     });
 
-    const trimmed = filteredLines.join('\n');
-    console.log(`Content aggressively trimmed: ${text.length} -> ${trimmed.length} chars (${Math.round((1 - trimmed.length/text.length) * 100)}% reduction)`);
-    return trimmed;
+    const title = (await getInnerText(page, ["h1", "h2", ".offer-title", "[data-testid=offer-title]"])) ||
+        await page.title();
+
+    const possibleDesc = await getInnerText(page, [
+        ".offer-description", ".description", "article p", ".content p", "main p"
+    ]);
+
+    const fullText = await page.evaluate(() => document.body.innerText.replace(/\s+/g, " ").trim());
+
+    const validityMatch = fullText.match(/(offer\s*valid(?:ity)?|valid(?:ity)?|offer\s*period)\s*[:\-]?\s*([^\n]{5,120})/i);
+    const validity = validityMatch ? validityMatch[2].trim() : "";
+
+    const tnc = await page.evaluate(() => {
+        function textFromNode(node) {
+            return node ? (node.innerText || node.textContent || "").trim() : "";
+        }
+        const candidates = Array.from(document.querySelectorAll("*"))
+            .filter(n => /terms?\s*&?\s*conditions?/i.test(n.textContent || ""));
+        for (const node of candidates) {
+            const parent = node.closest("section, article, div");
+            const text = textFromNode(parent) || textFromNode(node);
+            if (text && text.length > 50) return text;
+        }
+        return "";
+    });
+
+    const applicabilityText = (() => {
+        const m = fullText.match(/(applicab(?:le|ility)\s*(?:cards?)?|valid\s*for|offer\s*valid\s*(?:on|for)|eligible\s*cards?|all\s*sbi\s*cards[^\n]*exclud[^\n]*|exclud(?:e|es|ing)\s*[^\n]{3,})[^\n]*/i);
+        return m ? m[0].trim() : "";
+    })();
+
+    const description = possibleDesc || (() => {
+        const m = fullText.match(/(?:about\s*the\s*offer|offer\s*details|description)\s*[:\-]?\s*([^\n]{20,300})/i);
+        return m ? m[1].trim() : "";
+    })();
+
+    return {
+        title: String(title || "").trim(),
+        description,
+        validity,
+        tnc: tnc || "",
+        applicabilityText
+    };
 }
 
+async function scrapeOffersIndex(page) {
+    await page.goto(START_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: 60000
+    });
+    await page.waitForSelector("body", {
+        timeout: 30000
+    });
+
+    try {
+        const cookieBtn = await page.$x("//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'accept') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'agree') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'close')]");
+        if (cookieBtn && cookieBtn[0]) await cookieBtn[0].click();
+    } catch {}
+
+    // Try auto-scroll to load all lazy content
+    try {
+        await page.evaluate(async () => {
+            await new Promise((resolve) => {
+                let lastHeight = 0;
+                let stableTicks = 0;
+                const int = setInterval(() => {
+                    const {
+                        scrollHeight
+                    } = document.documentElement;
+                    window.scrollTo(0, scrollHeight);
+                    if (scrollHeight === lastHeight) {
+                        stableTicks++;
+                        if (stableTicks >= 5) {
+                            clearInterval(int);
+                            resolve(null);
+                        }
+                    } else {
+                        stableTicks = 0;
+                        lastHeight = scrollHeight;
+                    }
+                }, 400);
+            });
+        });
+    } catch {}
+
+    // Click any Load More buttons if present
+    try {
+        let tries = 0;
+        while (tries < 5) {
+            const buttons = await page.$x("//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'load more')]");
+            if (!buttons || buttons.length === 0) break;
+            for (const b of buttons) {
+                try {
+                    await b.click();
+                } catch {}
+                await sleep(500);
+            }
+            tries++;
+        }
+    } catch {}
+
+    const cards = await page.evaluate(() => {
+        const set = new Map();
+        const add = (title, href) => {
+            if (!title || !href) return;
+            const t = title.trim();
+            const h = href.trim();
+            if (!set.has(h)) set.set(h, t);
+        };
+
+        const anchors = Array.from(document.querySelectorAll("a[href]"));
+        for (const a of anchors) {
+            const href = a.getAttribute("href") || "";
+            const abs = a.href || href;
+            const text = (a.innerText || a.textContent || a.getAttribute("title") || "").replace(/\s+/g, " ").trim();
+            // Only accept true offer detail pages
+            if (/\/en\/personal\/offer\/[^?#]+\.page/i.test(abs)) {
+                if (text && text.length >= 3) add(text, abs);
+            }
+        }
+        // Also handle javascript:void(0) links with data-id pointing to offer slug
+        const idAnchors = Array.from(document.querySelectorAll("a.so-card-arrow-block[data-id]"));
+        for (const a of idAnchors) {
+            const dataId = a.getAttribute("data-id");
+            // Try to find a reasonable title within the card container
+            let title = "";
+            const card = a.closest(".so-card, .offer-card, li, article, .card, .col-12, div");
+            if (card) {
+                const heading = card.querySelector("h3, h2, .title, .heading");
+                title = (heading ? (heading.innerText || heading.textContent) : (card.innerText || "")) || "";
+            }
+            title = (title || dataId || "").replace(/\s+/g, " ").trim();
+            if (dataId) add(title || dataId, `/en/personal/offer/${dataId}`);
+        }
+        return Array.from(set.entries()).map(([href, title]) => ({
+            title,
+            href
+        }));
+    });
+
+    // Normalize to absolute URLs
+    const normalized = cards.map(c => {
+        const href = c.href.startsWith("http") ? c.href : new URL(c.href, "https://www.sbicard.com").href;
+        return {
+            title: c.title,
+            href
+        };
+    });
+
+    return normalized;
+}
+
+async function processOffer(browser, card) {
+    const page = await browser.newPage();
+    try {
+        await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+        await page.goto(card.href, {
+            waitUntil: "domcontentloaded",
+            timeout: 60000
+        });
+        await page.waitForSelector("body", {
+            timeout: 20000
+        });
+        const detail = await extractDetail(page);
+
+        const {
+            eligibleCards,
+            excludedCards
+        } = resolveEligibleCards(detail.applicabilityText || "");
+
+        let slug = "";
+        try {
+            const u = new URL(card.href);
+            const last = u.pathname.split("/").filter(Boolean).pop() || "offer";
+            slug = safeSlug(last.replace(/\.page$/i, ""));
+        } catch {
+            slug = safeSlug(detail.title || card.title || "offer");
+        }
+        const payload = {
+            offerId: slug,
+            title: detail.title || card.title || "",
+            description: detail.description || "",
+            validity: detail.validity || "",
+            tnc: detail.tnc || "",
+            eligibleCards,
+            excludedCards
+        };
+
+        ensureDir(OUTPUT_DIR);
+        const target = path.join(OUTPUT_DIR, `${slug}.json`);
+        fs.writeFileSync(target, JSON.stringify(payload, null, 2), "utf8");
+        console.log(`✅ Saved -> ${target}`);
+    } catch (e) {
+        console.warn(`Failed to process offer: ${card.href} - ${e.message}`);
+    } finally {
+        try {
+            await page.close();
+        } catch {}
+        await sleep(jitter());
+    }
+}
 
 async function run() {
-    console.log("\n=== Start ===");
-    console.log("Target URL:", START_URL);
+    console.log("\n=== SBI Offers Scraper ===");
+    ensureDir(OUTPUT_DIR);
+
+    const browser = await puppeteer.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    });
+    const page = await browser.newPage();
 
     try {
-        console.log("\nValidating configuration...");
-        if (!process.env.OPENAI_API_KEY) {
-            console.error('OPENAI_API_KEY missing. Create .env with OPENAI_API_KEY=your_key_here');
-            process.exit(1);
-        }
-        console.log("✅ Configuration OK");
+        const cards = await scrapeOffersIndex(page);
+        console.log(`Found ${cards.length} offer links`);
 
-        console.log("\nCrawling...");
-        const {
-            text,
-            links
-        } = await crawlWithinScope(START_URL, 2, {
-            pageLimit: 12,
-            pdfLimit: 12,
-            crawlConcurrency: 3 // Parallel page crawling
-        });
+        // Deduplicate by href
+        const uniqueByHref = Array.from(new Map(cards.map(c => [c.href, c])).values());
 
-        console.log(`✅ Crawl complete. Text: ${text.length} chars. PDFs found: ${links.length}`);
+        const limit = pLimit(CONCURRENCY);
+        const tasks = uniqueByHref.map((card) => limit(() => processOffer(browser, card)));
+        const results = await Promise.allSettled(tasks);
 
-        if (!text || text.length === 0) {
-            console.error("No content extracted from crawling");
-            process.exit(1);
-        }
-
-        let allText = text;
-
-        // Process PDFs with worker threads
-        const seenPdf = new Set();
-        const pdfLinks = [];
-        for (const link of links) {
-            if (link.type !== "pdf") continue;
-            if (seenPdf.has(link.url)) continue;
-            seenPdf.add(link.url);
-            pdfLinks.push(link);
-        }
-
-        if (pdfLinks.length) {
-            console.log(`\nProcessing ${pdfLinks.length} PDFs using worker threads...`);
-
-            // Use worker-based parallel processing
-            const {
-                results: pdfResults,
-                successful,
-                failed
-            } = await parseMultiplePdfsInWorkers(pdfLinks, 3);
-
-            console.log(`\nPDF Processing Summary:`);
-            console.log(`✅ Successful: ${successful.length}`);
-            console.log(`❌ Failed: ${failed.length}`);
-
-            if (failed.length > 0) {
-                console.log(`\nFailed PDFs:`);
-                failed.forEach(f => console.log(`  - ${f.url}: ${f.error}`));
-            }
-
-            // Add successful PDF content to allText
-            successful.forEach((result) => {
-                if (result.textContent && result.textContent.trim()) {
-                    allText += "\n\n[PDF:" + result.url + "]\n" + result.textContent;
-                }
-            });
-        }
-
-        if (!fs.existsSync("./data")) {
-            fs.mkdirSync("./data", {
-                recursive: true
-            });
-            console.log("\n✅ Created data directory");
-        }
-
+        const ok = results.filter(r => r.status === "fulfilled").length;
+        const fail = results.length - ok;
+        console.log(`Done. Success: ${ok}, Failed: ${fail}`);
+    } catch (e) {
+        console.error("Fatal error:", e.message);
+    } finally {
         try {
-            fs.writeFileSync("./data/output.txt", allText, "utf8");
-            console.log(`\n✅ Saved raw text to data/output.txt (${allText.length} chars)`);
-        } catch (error) {
-            console.error("Failed to save raw text:", error.message);
-            process.exit(1);
-        }
-
-        // Pre-trim content to focus on offer-relevant sections
-        const trimmedText = preTrimContent(allText);
-
-        console.log("\nExtracting with OpenAI...");
-
-        // Performance monitoring
-        const startTime = Date.now();
-
-        // Try brand-keyed extraction first (use trimmed content)
-        const brandStartTime = Date.now();
-        const brandMap = await extractBrandOffers(trimmedText);
-        const brandTime = Date.now() - brandStartTime;
-        console.log(`Brand extraction completed in ${brandTime}ms`);
-
-        const cardStartTime = Date.now();
-        const extracted = await extractCardDetails(trimmedText);
-        const cardTime = Date.now() - cardStartTime;
-        console.log(`Card extraction completed in ${cardTime}ms`);
-
-        if (!extracted) {
-            console.log("Extraction failed or returned empty data");
-            return;
-        }
-
-        console.log(`✅ Extraction OK.`);
-
-        // Create issuer-based directory structure - normalize issuer name
-        let issuer = "hdfc"; // Default fallback
-
-        if (extracted.issuer) {
-            // Normalize issuer name to prevent multiple folders
-            issuer = extracted.issuer
-                .toLowerCase()
-                .replace(/\s+/g, '_') // Replace spaces with underscores
-                .replace(/[^a-z0-9_]/g, '') // Remove special characters
-                .replace(/^hdfc.*/, 'hdfc') // Normalize HDFC variations
-                .replace(/^diners.*/, 'hdfc') // Normalize Diners Club to HDFC
-                .replace(/^bank.*/, 'hdfc'); // Normalize bank variations
-        }
-
-        const issuerDir = path.join("data", issuer);
-        if (!fs.existsSync(issuerDir)) {
-            fs.mkdirSync(issuerDir, {
-                recursive: true
-            });
-            console.log(`✅ Created issuer directory: ${issuerDir}`);
-        }
-
-        // Process card-wise offers
-        const offers = Array.isArray(extracted ?.offers) ? extracted.offers : [];
-        const cardToOffers = {};
-        const cardNameSafe = String(extracted.card_name || "hdfc_diners_club_privilege").replace(/[^a-z0-9]+/gi, "_").toLowerCase();
-
-        // Group offers by card applicability
-        for (const offer of offers) {
-            const cards = Array.isArray(offer.card_applicability) ? offer.card_applicability : [];
-            if (cards.length === 0) {
-                // If no specific card applicability, assign to main card
-                if (!cardToOffers[cardNameSafe]) cardToOffers[cardNameSafe] = [];
-                cardToOffers[cardNameSafe].push(offer);
-            } else {
-                for (const c of cards) {
-                    const key = String(c).replace(/[^a-z0-9]+/gi, "_").toLowerCase();
-                    if (!cardToOffers[key]) cardToOffers[key] = [];
-                    cardToOffers[key].push(offer);
-                }
-            }
-        }
-
-        // If no offers were assigned to any specific card, assign all to main card
-        if (Object.keys(cardToOffers).length === 0) {
-            cardToOffers[cardNameSafe] = offers;
-        }
-
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0] + '_' +
-            new Date().toISOString().replace(/[:.]/g, '-').split('T')[1].split('.')[0];
-
-        const existingFiles = fs.readdirSync(issuerDir)
-            .filter(f => /^(\d+)\.json$/i.test(f))
-            .map(f => parseInt(f.match(/^(\d+)\.json$/i)[1], 10))
-            .filter(n => Number.isFinite(n));
-        let nextIndex = existingFiles.length ? Math.max(...existingFiles) + 1 : 1;
-
-        let savedFiles = 0;
-        for (const [cardKey, cardOffers] of Object.entries(cardToOffers)) {
-            const target = path.join(issuerDir, `${nextIndex}.json`);
-
-            // Prefer OpenAI brand map; if missing or contains generic entries, synthesize from offers
-            let payload = brandMap && Object.keys(brandMap).length ? brandMap : {};
-
-            // Check if brandMap contains only generic entries (like "HDFC Bank")
-            const hasSpecificBrands = Object.keys(payload).some(key =>
-                !key.toLowerCase().includes('hdfc') &&
-                !key.toLowerCase().includes('bank') &&
-                !key.toLowerCase().includes('diners') &&
-                !key.toLowerCase().includes('club')
-            );
-
-            if (!hasSpecificBrands || Object.keys(payload).length === 0) {
-                console.log("Synthesizing brand-specific offers from extracted data...");
-                payload = {};
-
-                for (const offer of cardOffers) {
-                    const brandRaw = (offer.merchant || offer.title || "Unknown");
-                    const brand = String(brandRaw).trim();
-                    const validity = offer.validity || "";
-                    const description = offer.description || offer.title || "";
-                    const terms = Array.isArray(offer.terms_conditions) ? offer.terms_conditions.join(" ") : (offer.terms_conditions || "");
-
-                    // Only include specific merchant brands, not generic bank names
-                    if (brand && !brand.toLowerCase().includes('hdfc') && !brand.toLowerCase().includes('bank')) {
-                        if (!payload[brand]) {
-                            payload[brand] = {
-                                "validity": validity,
-                                "offer description": description,
-                                "t&c": terms
-                            };
-                        } else {
-                            payload[brand]["validity"] = [payload[brand]["validity"], validity].filter(Boolean).join(" | ");
-                            payload[brand]["offer description"] = [payload[brand]["offer description"], description].filter(Boolean).join(" | ");
-                            payload[brand]["t&c"] = [payload[brand]["t&c"], terms].filter(Boolean).join(" | ");
-                        }
-                    }
-                }
-            }
-
-            try {
-                fs.writeFileSync(target, JSON.stringify(payload, null, 2), "utf8");
-                console.log(`✅ Saved JSON -> ${target} (offers: ${cardOffers.length})`);
-                savedFiles++;
-                nextIndex++;
-            } catch (error) {
-                console.error(`Failed to save ${target}:`, error.message);
-            }
-        }
-
-        const totalTime = Date.now() - startTime;
-
-        console.log(`\n✅ Done. Files saved: ${savedFiles}`);
-        console.log(`⏱️  Total processing time: ${totalTime}ms`);
-
-
-    } catch (error) {
-        console.error("Application error:", error.message);
-        console.error(error.stack);
-        process.exit(1);
+            await page.close();
+        } catch {}
+        await browser.close();
     }
 }
 
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection:', reason);
-    process.exit(1);
-});
-
-process.on('uncaughtException', (error) => {
-    console.error('Uncaught Exception:', error);
-    process.exit(1);
-});
-
-if (!fs.existsSync('.env')) {
-    const envTemplate = `# OpenAI API Configuration
-OPENAI_API_KEY=your_openai_api_key_here
-
-# Optional: Adjust these if needed
-# MAX_TOKENS=4000
-# TEMPERATURE=0`;
-
-    try {
-        fs.writeFileSync('.env', envTemplate);
-        console.log('Created .env template file. Add your OpenAI API key.');
-    } catch (error) {
-        console.error('Could not create .env file:', error.message);
-    }
-}
-
-console.log("Starting application...\n");
-run().catch(error => {
-    console.error("Fatal error in main function:", error);
+run().catch((e) => {
+    console.error("Unhandled error:", e);
     process.exit(1);
 });
