@@ -49,16 +49,23 @@ function resolveEligibleCards(applicableText) {
     }
 
     // Case: Specific cards listed explicitly (e.g. "Offer valid on SBI Card ELITE, SBI Card PRIME")
-    const specificMatch = applicableText.match(/SBI (?:Card|Cards)? ([^\n]+)$/i);
-    if (specificMatch) {
-        const listed = specificMatch[1].split(',').map(card => 'SBI ' + card.trim());
-        eligibleCards = listed;
-        excludedCards = [];
-        return {
-            eligibleCards,
-            excludedCards
-        };
-    }
+   const specificMatch = applicableText.match(/SBI (?:Card|Cards)? ([^\n]+)$/i);
+   if (specificMatch) {
+       const listed = specificMatch[1]
+           .split(',')
+           .map(card => 'SBI ' + card.trim());
+
+       eligibleCards = listed;
+
+       // Excluded = all SBI cards except the ones listed
+       excludedCards = ALL_SBI_CARDS.filter(card => !listed.includes(card));
+
+       return {
+           eligibleCards,
+           excludedCards
+       };
+   }
+
 
     // Default: return all cards
     eligibleCards = [...ALL_SBI_CARDS];
