@@ -117,7 +117,6 @@
             if (cookieBtn && cookieBtn[0]) await cookieBtn[0].click();
         } catch {}
 
-        // Try auto-scroll to load all lazy content
         try {
             await page.evaluate(async () => {
                 await new Promise((resolve) => {
@@ -143,7 +142,6 @@
             });
         } catch {}
 
-        // Click any Load More buttons if present
         try {
             let tries = 0;
             while (tries < 5) {
@@ -173,16 +171,13 @@
                 const href = a.getAttribute("href") || "";
                 const abs = a.href || href;
                 const text = (a.innerText || a.textContent || a.getAttribute("title") || "").replace(/\s+/g, " ").trim();
-                // Only accept true offer detail pages
                 if (/\/en\/personal\/offer\/[^?#]+\.page/i.test(abs)) {
                     if (text && text.length >= 3) add(text, abs);
                 }
             }
-            // Also handle javascript:void(0) links with data-id pointing to offer slug
             const idAnchors = Array.from(document.querySelectorAll("a.so-card-arrow-block[data-id]"));
             for (const a of idAnchors) {
                 const dataId = a.getAttribute("data-id");
-                // Try to find a reasonable title within the card container
                 let title = "";
                 const card = a.closest(".so-card, .offer-card, li, article, .card, .col-12, div");
                 if (card) {
@@ -198,7 +193,6 @@
             }));
         });
 
-        // Normalize to absolute URLs
         const normalized = cards.map(c => {
             const href = c.href.startsWith("http") ? c.href : new URL(c.href, "https://www.sbicard.com").href;
             return {
@@ -274,7 +268,6 @@
             const cards = await scrapeOffersIndex(page);
             console.log(`Found ${cards.length} offer links`);
 
-            // Deduplicate by href
             const uniqueByHref = Array.from(new Map(cards.map(c => [c.href, c])).values());
 
             const limit = pLimit(CONCURRENCY);

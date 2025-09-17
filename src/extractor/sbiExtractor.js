@@ -8,12 +8,9 @@ function resolveEligibleCards(applicableText) {
     let excludedCards = [];
     const lowerText = applicableText.toLowerCase();
 
-    // Case: All SBI Credit Cards excluding ... (may include Corporate Cards and others)
     const exclMatch = applicableText.match(/All SBI Credit Cards excluding ([^\n]+)/i);
     if (exclMatch) {
-        // Only take the part up to the first ' and on ', ' and for ', or similar non-card phrase
         let exclusionRaw = exclMatch[1].split(/ and on | and for | and at | except | except for | valid | offer | summary|\(|\.|\n|\r|\[|\{|\*/i)[0];
-        // Split on comma, ampersand, and 'and'
         let excluded = exclusionRaw
             .split(/,|&| and /i)
             .map(card => card.trim())
@@ -24,12 +21,10 @@ function resolveEligibleCards(applicableText) {
         if (hasCorporate) {
             excludedCards = [...CORPORATE_CARDS];
         }
-        // Add any other named exclusions
         excludedCards = [
             ...excludedCards,
             ...namedExclusions
         ];
-        // Remove duplicates
         excludedCards = Array.from(new Set(excludedCards));
         eligibleCards = ALL_SBI_CARDS.filter(card => !excludedCards.includes(card));
         return {
@@ -38,7 +33,6 @@ function resolveEligibleCards(applicableText) {
         };
     }
 
-    // Case: All SBI Credit Cards excluding only Corporate Cards
     if (lowerText.includes('all sbi credit cards excluding corporate cards')) {
         eligibleCards = [...ALL_SBI_CARDS];
         excludedCards = [...CORPORATE_CARDS];
@@ -48,7 +42,6 @@ function resolveEligibleCards(applicableText) {
         };
     }
 
-    // Case: Specific cards listed explicitly (e.g. "Offer valid on SBI Card ELITE, SBI Card PRIME")
    const specificMatch = applicableText.match(/SBI (?:Card|Cards)? ([^\n]+)$/i);
    if (specificMatch) {
        const listed = specificMatch[1]
@@ -57,7 +50,6 @@ function resolveEligibleCards(applicableText) {
 
        eligibleCards = listed;
 
-       // Excluded = all SBI cards except the ones listed
        excludedCards = ALL_SBI_CARDS.filter(card => !listed.includes(card));
 
        return {
@@ -67,7 +59,6 @@ function resolveEligibleCards(applicableText) {
    }
 
 
-    // Default: return all cards
     eligibleCards = [...ALL_SBI_CARDS];
     excludedCards = [];
     return {

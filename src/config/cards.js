@@ -1,7 +1,6 @@
-// src/config/cards.js
-// Hardcoded list of SBI Credit Cards
 
-// List of all retail SBI credit cards (hardcoded)
+
+
 const ALL_SBI_CARDS = [
     "SBI Card ELITE",
     "SBI Card PRIME",
@@ -41,7 +40,7 @@ const ALL_SBI_CARDS = [
     "SBI Card ELITE Advantage"
 ];
 
-// List of corporate cards
+
 const CORPORATE_CARDS = [
     "SBI Signature Corporate Card",
     "SBI Platinum Corporate Card",
